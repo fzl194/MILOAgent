@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ModelConfig, ResolvedModel } from '../agent-core/types'
+import type { ModelConfig, ProviderModel, ResolvedModel } from '../agent-core/types'
 
 interface ModelState {
   models: ModelConfig[]
@@ -21,15 +21,17 @@ interface ModelState {
 
 /** Normalize a raw models.json entry into a provider-shaped ModelConfig. Legacy
  *  flat entries (just `model`/`apiKey`/...) are upgraded with a synthesized
- *  `models[]`, `defaultModel`, and `protocol: 'openai'`. Pure — unit-tested
- *  without the store/IPC. */
+ *  `models[]`, `defaultModel`, and `protocol: 'openai'`. Spreads the raw entry
+ *  first, so fields not normalized here — including ones the concurrent
+ *  refactor is relocating (e.g. sampling params) — survive a load+persist
+ *  round-trip. Lossless + forward-compatible. Pure w.r.t. the store/IPC. */
 export function migrateModelConfig(raw: unknown): ModelConfig {
   const r = (raw ?? {}) as Record<string, any>
   const model = typeof r.model === 'string' ? r.model : ''
   const contextWindow = typeof r.contextWindow === 'number' ? r.contextWindow : undefined
   // Spread (don't whitelist) so future ProviderModel fields survive a
   // load+persist round-trip; normalize only the two known fields.
-  const models = Array.isArray(r.models) && r.models.length
+  const models = Array.isArray(r.models)
     ? r.models.map((x: any) => ({
         ...x,
         id: String(x?.id ?? ''),
@@ -38,7 +40,10 @@ export function migrateModelConfig(raw: unknown): ModelConfig {
     : model
       ? [{ id: model, contextWindow }]
       : []
+  // Spread first so unhandled/legacy fields are preserved (lossless), then
+  // normalize the known ModelConfig fields on top.
   return {
+    ...r,
     id: typeof r.id === 'string' ? r.id : crypto.randomUUID(),
     name: typeof r.name === 'string' ? r.name : 'Default',
     apiKey: typeof r.apiKey === 'string' ? r.apiKey : '',
@@ -50,6 +55,39 @@ export function migrateModelConfig(raw: unknown): ModelConfig {
     models,
     defaultModel: typeof r.defaultModel === 'string' ? r.defaultModel : model || undefined
   }
+}
+
+/** Fetch available model ids from an OpenAI-compatible `GET {baseUrl}/models`.
+ *  Renderer-side fetch (same origin/path the chat path already uses); throws on
+ *  non-OK so the caller can surface the error. */
+export async function fetchModelList(baseUrl: string, apiKey: string): Promise<string[]> {
+  if (!/^https?:\/\//i.test(baseUrl)) throw new Error('Base URL 需以 http(s):// 开头')
+  const url = baseUrl.replace(/\/+$/, '') + '/models'
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`模型列表请求失败 (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`)
+  }
+  const j = await res.json()
+  const arr = (j as any)?.data ?? (j as any)?.models ?? j
+  return Array.isArray(arr)
+    ? arr.map((x: any) => String(x?.id ?? x?.name ?? x?.model ?? '')).filter(Boolean)
+    : []
+}
+
+/** Merge a fetched id list into a provider's existing models: keep
+ *  contextWindow overrides on ids still present, add new fetched ids, and retain
+ *  manual entries the endpoint didn't list. Pure — unit-tested. */
+export function mergeModelIds(existing: ProviderModel[], fetched: string[]): ProviderModel[] {
+  // Dedup fetched first — real endpoints return snapshot duplicates (same id
+  // twice), which would collide React keys and confuse the default-model radio.
+  const seen = new Set<string>()
+  const unique = fetched.filter((id) => (seen.has(id) ? false : (seen.add(id), true)))
+  const existingById = new Map(existing.map((m) => [m.id, m]))
+  const merged = unique.map((id) => existingById.get(id) ?? ({ id } as ProviderModel))
+  const fetchedSet = new Set(unique)
+  for (const m of existing) if (!fetchedSet.has(m.id)) merged.push(m)
+  return merged
 }
 
 export const useModelStore = create<ModelState>((set, get) => ({

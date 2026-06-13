@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { migrateModelConfig, useModelStore } from './model-store'
+import { describe, it, expect, afterEach } from 'vitest'
+import { migrateModelConfig, mergeModelIds, fetchModelList, useModelStore } from './model-store'
 import type { ModelConfig } from '../agent-core/types'
 
 describe('migrateModelConfig', () => {
@@ -40,6 +40,29 @@ describe('migrateModelConfig', () => {
     expect(
       migrateModelConfig({ id: 'p3', name: 'Claude', apiKey: 'k', baseUrl: 'b', model: 'claude-opus-4-8', protocol: 'anthropic' }).protocol
     ).toBe('anthropic')
+  })
+
+  it('is idempotent (migrating an already-migrated entry is a no-op)', () => {
+    const once = migrateModelConfig({
+      id: 'p4',
+      name: 'X',
+      apiKey: 'k',
+      baseUrl: 'b',
+      model: 'm1',
+      contextWindow: 1000
+    })
+    expect(migrateModelConfig(once)).toEqual(once)
+  })
+
+  it('treats models: [] as already-provider (does not synthesize from `model`)', () => {
+    const m = migrateModelConfig({ id: 'p5', name: 'X', apiKey: 'k', baseUrl: 'b', model: 'm1', models: [] })
+    expect(m.models).toEqual([])
+  })
+
+  it('preserves unhandled legacy fields (lossless across the concurrent refactor)', () => {
+    const m = migrateModelConfig({ id: 'p6', name: 'X', apiKey: 'k', baseUrl: 'b', model: 'm1', temperature: 0.7, maxTokens: 4096 })
+    expect((m as any).temperature).toBe(0.7)
+    expect((m as any).maxTokens).toBe(4096)
   })
 
   it('defaults unknown/missing fields safely', () => {
@@ -101,5 +124,56 @@ describe('resolveModel', () => {
 
   it('returns undefined for an unknown provider', () => {
     expect(useModelStore.getState().resolveModel('does-not-exist')).toBeUndefined()
+  })
+})
+
+describe('mergeModelIds', () => {
+  it('unions fetched ids with existing, preserving contextWindow and manual entries', () => {
+    // 'a' is in fetched → keep its contextWindow; 'manual' is not → retained; 'b' is new.
+    const existing = [
+      { id: 'a', contextWindow: 1000 },
+      { id: 'manual', contextWindow: 500 }
+    ]
+    const merged = mergeModelIds(existing, ['a', 'b'])
+    expect(merged).toEqual([
+      { id: 'a', contextWindow: 1000 },
+      { id: 'b' },
+      { id: 'manual', contextWindow: 500 }
+    ])
+  })
+
+  it('returns just the fetched ids when existing is empty', () => {
+    expect(mergeModelIds([], ['x', 'y'])).toEqual([{ id: 'x' }, { id: 'y' }])
+  })
+
+  it('is idempotent (re-merging the same list changes nothing)', () => {
+    const once = mergeModelIds([], ['a', 'b'])
+    expect(mergeModelIds(once, ['a', 'b'])).toEqual(once)
+  })
+
+  it('dedups duplicate ids returned by the endpoint', () => {
+    expect(mergeModelIds([], ['a', 'a', 'b'])).toEqual([{ id: 'a' }, { id: 'b' }])
+  })
+})
+
+describe('fetchModelList', () => {
+  const origFetch = global.fetch
+  afterEach(() => {
+    global.fetch = origFetch
+  })
+  const mk = (body: unknown): typeof fetch =>
+    (() => Promise.resolve({ ok: true, json: () => Promise.resolve(body) })) as unknown as typeof fetch
+
+  it('parses data / models / bare-array response shapes', async () => {
+    global.fetch = mk({ data: [{ id: 'a' }] })
+    expect(await fetchModelList('https://x', 'k')).toEqual(['a'])
+    global.fetch = mk({ models: [{ name: 'b' }] })
+    expect(await fetchModelList('https://x', 'k')).toEqual(['b'])
+    global.fetch = mk([{ model: 'c' }])
+    expect(await fetchModelList('https://x', 'k')).toEqual(['c'])
+  })
+
+  it('rejects a non-http baseUrl before fetching', async () => {
+    await expect(fetchModelList('file:///etc', 'k')).rejects.toThrow(/http/i)
   })
 })
