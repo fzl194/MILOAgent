@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 
 const DATA_DIR = () => join(app.getPath('home'), '.desktop-agent')
+const WORKSPACE_DIR = () => join(DATA_DIR(), 'workspace')
 const SESSIONS_DIR = () => join(DATA_DIR(), 'sessions')
 const STATS_DIR = () => join(DATA_DIR(), 'stats')
 const TRACES_DIR = () => join(DATA_DIR(), 'traces')
@@ -57,13 +58,8 @@ function canonicalizeProjects(input: unknown): Record<string, unknown>[] {
 // data:clearAll so both leave the default project pointing at an existing dir
 // (P4: the default project is never dirless).
 async function buildDefaultProject(): Promise<Record<string, unknown>> {
-  const cfg = await readJson<Record<string, any>>(join(DATA_DIR(), 'config.json'), {})
-  const wsRoot =
-    cfg && typeof cfg.workspaceRoot === 'string' && cfg.workspaceRoot.trim()
-      ? cfg.workspaceRoot
-      : join(DATA_DIR(), 'workspace')
-  await mkdir(wsRoot, { recursive: true })
-  const dir = join(wsRoot, 'default')
+  await mkdir(WORKSPACE_DIR(), { recursive: true })
+  const dir = join(WORKSPACE_DIR(), 'default')
   await mkdir(dir, { recursive: true })
   const now = Date.now()
   return { id: randomUUID(), name: '默认项目', dirPath: await realpath(dir), isDefault: true, createdAt: now, updatedAt: now }
@@ -281,23 +277,17 @@ ipcMain.handle('project:save', async (_, projects: unknown[]) => {
 const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
 
 // Create a new project folder under the workspace root and return its realpath.
-// workspaceRoot comes from config.json; if unset, defaults to ~/.desktop-agent/workspace.
-// The name is sanitized (illegal/control chars stripped, Windows-reserved names
-// rejected) and the final folder is created with a NON-recursive mkdir as an
-// atomic placeholder — concurrent same-name requests get EEXIST and roll to a
-// -2/-3 suffix instead of both "winning" the same directory.
+// Create a new project folder under the workspace dir (~/.desktop-agent/workspace)
+// and return its realpath. The name is sanitized (illegal/control chars stripped,
+// Windows-reserved names rejected) and the final folder is created with a
+// NON-recursive mkdir as an atomic placeholder — concurrent same-name requests
+// get EEXIST and roll to a -2/-3 suffix instead of both "winning" the same dir.
 ipcMain.handle('project:createDir', async (_, name: string) => {
   try {
-    const cfg = await readJson<Record<string, any>>(join(DATA_DIR(), 'config.json'), {})
-    const wsRoot =
-      cfg && typeof cfg.workspaceRoot === 'string' && cfg.workspaceRoot.trim()
-        ? cfg.workspaceRoot
-        : join(DATA_DIR(), 'workspace')
-    // Ensure + validate the workspace root (must be a real directory).
-    await mkdir(wsRoot, { recursive: true })
-    const wsReal = await realpath(wsRoot)
+    await mkdir(WORKSPACE_DIR(), { recursive: true })
+    const wsReal = await realpath(WORKSPACE_DIR())
     const wsStat = await stat(wsReal)
-    if (!wsStat.isDirectory()) return { success: false, error: '工作区根不是目录：' + wsRoot }
+    if (!wsStat.isDirectory()) return { success: false, error: '工作区不是目录：' + WORKSPACE_DIR() }
 
     let safe =
       String(name || '')
@@ -522,7 +512,6 @@ ipcMain.handle('data:clearAll', async () => {
     await writeJson(PROJECTS_FILE(), [await buildDefaultProject()])
     await writeJson(join(DATA_DIR(), 'config.json'), {
       systemPrompt: '',
-      workspaceRoot: undefined,
       sandbox: 'workspace-write',
       approvalPolicy: 'on-request'
     })

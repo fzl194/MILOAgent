@@ -152,7 +152,7 @@ function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): 
   return {
     ctx: {
       sandbox: pcfg?.sandbox ?? cfg.sandbox,
-      workspaceRoot: workspaceOverride ?? cfg.workspaceRoot,
+      workspaceRoot: workspaceOverride,
       cwd,
       // Unified rules: session scope first, then project scope.
       rules: usePermissionStore.getState().merged(pcfg?.rules)

@@ -6,19 +6,18 @@ interface FormState {
   systemPrompt: string
   sandbox: SandboxMode
   approvalPolicy: ApprovalPolicy
-  workspaceRoot: string
 }
 
-const SANDBOX_OPTIONS: { value: SandboxMode; label: string; hint: string }[] = [
-  { value: 'workspace-write', label: '工作区可写', hint: '仅工作区根内可写（默认）' },
-  { value: 'read-only', label: '只读', hint: '禁止任何写入与命令' },
-  { value: 'full-access', label: '完全访问', hint: '不限制写入路径' }
+const SANDBOX_OPTIONS: { value: SandboxMode; hint: string }[] = [
+  { value: 'workspace-write', hint: '仅工作区根内可写（默认）' },
+  { value: 'read-only', hint: '禁止任何写入与命令' },
+  { value: 'full-access', hint: '不限制写入路径' }
 ]
 
-const POLICY_OPTIONS: { value: ApprovalPolicy; label: string; hint: string }[] = [
-  { value: 'on-request', label: '需要时问', hint: '写与危险都问（默认）' },
-  { value: 'auto', label: '自动', hint: '安全+写自动跑，危险才问' },
-  { value: 'untrusted', label: '全部确认', hint: '除已知安全读外都问' }
+const POLICY_OPTIONS: { value: ApprovalPolicy; hint: string }[] = [
+  { value: 'on-request', hint: '写与危险都问（默认）' },
+  { value: 'auto', hint: '安全+写自动跑，危险才问' },
+  { value: 'untrusted', hint: '除已知安全读外都问' }
 ]
 
 export function GeneralSettings(): React.ReactElement {
@@ -28,12 +27,10 @@ export function GeneralSettings(): React.ReactElement {
   const [form, setForm] = useState<FormState>({
     systemPrompt: '',
     sandbox: 'workspace-write',
-    approvalPolicy: 'on-request',
-    workspaceRoot: ''
+    approvalPolicy: 'on-request'
   })
   const [saved, setSaved] = useState(false)
   const [clearing, setClearing] = useState(false)
-  const [picking, setPicking] = useState(false)
 
   useEffect(() => {
     load()
@@ -43,8 +40,7 @@ export function GeneralSettings(): React.ReactElement {
     setForm({
       systemPrompt: config.systemPrompt,
       sandbox: config.sandbox,
-      approvalPolicy: config.approvalPolicy,
-      workspaceRoot: config.workspaceRoot ?? ''
+      approvalPolicy: config.approvalPolicy
     })
   }, [config])
 
@@ -52,21 +48,10 @@ export function GeneralSettings(): React.ReactElement {
     await save({
       systemPrompt: form.systemPrompt,
       sandbox: form.sandbox,
-      approvalPolicy: form.approvalPolicy,
-      workspaceRoot: form.workspaceRoot.trim() || undefined
+      approvalPolicy: form.approvalPolicy
     })
     setSaved(true)
     window.setTimeout(() => setSaved(false), 1500)
-  }
-
-  const handlePickFolder = async (): Promise<void> => {
-    setPicking(true)
-    try {
-      const res = await window.electronAPI.pickFolder()
-      if (res.success && res.data) setForm((f) => ({ ...f, workspaceRoot: res.data as string }))
-    } finally {
-      setPicking(false)
-    }
   }
 
   const handleClearAll = async (): Promise<void> => {
@@ -129,28 +114,8 @@ export function GeneralSettings(): React.ReactElement {
             </div>
           </div>
         </div>
-        <div className="mt-3">
-          <label className="label-tag mb-1.5 block">工作区根 · WORKSPACE ROOT</label>
-          <div className="flex gap-2">
-            <input
-              value={form.workspaceRoot}
-              onChange={(e) => setForm({ ...form, workspaceRoot: e.target.value })}
-              placeholder="决定可写范围；留空则不限（仅 workspace-write 生效）"
-              className="field font-mono text-xs"
-            />
-            <button
-              type="button"
-              onClick={handlePickFolder}
-              disabled={picking}
-              className="btn btn-ghost shrink-0 px-3 text-xs disabled:opacity-50"
-            >
-              {picking ? '…' : '选择'}
-            </button>
-          </div>
-          <div className="mt-1 font-mono text-[10px] text-faint">
-            文件写入限制在此目录内；Shell 仍由审批控制（个人版无内核沙箱）。
-            留空时「新建项目」与默认项目在默认 <span className="text-muted">~/.desktop-agent/workspace</span> 下。
-          </div>
+        <div className="mt-2 font-mono text-[10px] text-faint">
+          新建项目文件夹与默认项目目录固定在 <span className="text-muted">~/.desktop-agent/workspace</span>；想用别的目录请「复用已有文件夹」。
         </div>
       </div>
 

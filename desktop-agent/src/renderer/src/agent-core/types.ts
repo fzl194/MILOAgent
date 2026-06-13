@@ -185,7 +185,6 @@ export interface AgentConfig {
   systemPrompt: string
   sandbox: SandboxMode
   approvalPolicy: ApprovalPolicy
-  workspaceRoot?: string // global default workspace root
 }
 
 // ===== OpenAI API Types =====

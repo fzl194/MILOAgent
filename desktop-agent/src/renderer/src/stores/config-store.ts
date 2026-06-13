@@ -10,8 +10,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   systemPrompt: '',
   // Personal default leans safe: writes and dangerous actions both ask first.
   sandbox: 'workspace-write',
-  approvalPolicy: 'on-request',
-  workspaceRoot: undefined
+  approvalPolicy: 'on-request'
 }
 
 const SANDBOX_VALUES = new Set(['read-only', 'workspace-write', 'full-access'])
@@ -30,8 +29,7 @@ function mergeConfig(c: Record<string, any> | null | undefined): AgentConfig {
     approvalPolicy:
       typeof c.approvalPolicy === 'string' && POLICY_VALUES.has(c.approvalPolicy)
         ? (c.approvalPolicy as ApprovalPolicy)
-        : DEFAULT_CONFIG.approvalPolicy,
-    workspaceRoot: typeof c.workspaceRoot === 'string' ? c.workspaceRoot : undefined
+        : DEFAULT_CONFIG.approvalPolicy
   }
 }
 
