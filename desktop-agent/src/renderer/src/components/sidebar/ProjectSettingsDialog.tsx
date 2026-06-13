@@ -51,8 +51,8 @@ export function ProjectSettingsDialog({
   const [name, setName] = useState(project.name)
   const [dirPath, setDirPath] = useState(project.dirPath ?? '')
   const [systemPrompt, setSystemPrompt] = useState(cfg.systemPrompt ?? '')
-  const [sandbox, setSandbox] = useState<SandboxMode | '__inherit__'>(cfg.sandbox ?? '__inherit__')
-  const [policy, setPolicy] = useState<ApprovalPolicy | '__inherit__'>(cfg.approvalPolicy ?? '__inherit__')
+  const [sandbox, setSandbox] = useState<SandboxMode>(cfg.sandbox ?? gCfg.sandbox)
+  const [policy, setPolicy] = useState<ApprovalPolicy>(cfg.approvalPolicy ?? gCfg.approvalPolicy)
   const [defaultModelId, setDefaultModelId] = useState(cfg.defaultModelId ?? '')
   const [rules, setRules] = useState<PermissionRule[]>(
     (cfg.rules ?? []).map((r) => ({ ...r }))
@@ -89,8 +89,10 @@ export function ProjectSettingsDialog({
       }
       const patch: Partial<ProjectConfig> = {
         systemPrompt: systemPrompt.trim() || undefined,
-        sandbox: sandbox === '__inherit__' ? undefined : sandbox,
-        approvalPolicy: policy === '__inherit__' ? undefined : policy,
+        // Store no override when the project keeps the global default → truly
+        // inherits (follows future global changes).
+        sandbox: sandbox === gCfg.sandbox ? undefined : sandbox,
+        approvalPolicy: policy === gCfg.approvalPolicy ? undefined : policy,
         defaultModelId: defaultModelId || undefined,
         rules: cleaned.length ? cleaned : undefined
       }
@@ -156,12 +158,13 @@ export function ProjectSettingsDialog({
               '沙箱',
               <select
                 value={sandbox}
-                onChange={(e) => setSandbox(e.target.value as SandboxMode | '__inherit__')}
+                onChange={(e) => setSandbox(e.target.value as SandboxMode)}
                 className="field font-mono text-xs"
               >
-                <option value="__inherit__">继承全局（当前：{gCfg.sandbox}）</option>
                 {SANDBOX_OPTS.map((o) => (
-                  <option key={o} value={o}>{o}</option>
+                  <option key={o} value={o}>
+                    {o === gCfg.sandbox ? `${o}（继承全局）` : o}
+                  </option>
                 ))}
               </select>
             )}
@@ -169,12 +172,13 @@ export function ProjectSettingsDialog({
               '审批策略',
               <select
                 value={policy}
-                onChange={(e) => setPolicy(e.target.value as ApprovalPolicy | '__inherit__')}
+                onChange={(e) => setPolicy(e.target.value as ApprovalPolicy)}
                 className="field font-mono text-xs"
               >
-                <option value="__inherit__">继承全局（当前：{gCfg.approvalPolicy}）</option>
                 {POLICY_OPTS.map((o) => (
-                  <option key={o} value={o}>{o}</option>
+                  <option key={o} value={o}>
+                    {o === gCfg.approvalPolicy ? `${o}（继承全局）` : o}
+                  </option>
                 ))}
               </select>
             )}
@@ -217,7 +221,8 @@ export function ProjectSettingsDialog({
                   <select
                     value={r.action}
                     onChange={(e) => patchRule(i, { action: e.target.value as 'allow' | 'deny' })}
-                    className="field w-16 shrink-0 font-mono text-[11px]"
+                    className="shrink-0 rounded border border-line bg-card/80 px-1.5 py-1 font-mono text-[11px] text-fg outline-none"
+                    style={{ width: '4.5rem' }}
                   >
                     <option value="allow">允许</option>
                     <option value="deny">拒绝</option>
@@ -225,7 +230,8 @@ export function ProjectSettingsDialog({
                   <select
                     value={r.tool ?? '*'}
                     onChange={(e) => patchRule(i, { tool: e.target.value })}
-                    className="field w-20 shrink-0 font-mono text-[11px]"
+                    className="shrink-0 rounded border border-line bg-card/80 px-1.5 py-1 font-mono text-[11px] text-fg outline-none"
+                    style={{ width: '5.5rem' }}
                   >
                     {TOOL_OPTS.map((t) => (
                       <option key={t.value} value={t.value}>{t.label}</option>
