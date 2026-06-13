@@ -49,7 +49,19 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
 
   load: async () => {
     const res = await window.electronAPI.readConfig()
-    set({ config: mergeConfig(res.data), isLoaded: true })
+    const merged = mergeConfig(res.data)
+    set({ config: merged, isLoaded: true })
+    // Self-heal the on-disk config: older writes (and pre-fix clearAll) left a
+    // partial file (e.g. only { systemPrompt }). Persist the complete AgentConfig
+    // so the FILE — not just code defaults — actually holds sandbox/policy/etc.
+    const raw = res.data as Record<string, unknown> | null
+    if (!raw || JSON.stringify(merged) !== JSON.stringify(raw)) {
+      try {
+        await window.electronAPI.writeConfig(merged)
+      } catch {
+        /* in-memory config is still correct even if the heal write fails */
+      }
+    }
   },
 
   save: async (patch) => {
