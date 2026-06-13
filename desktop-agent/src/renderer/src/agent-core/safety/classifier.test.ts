@@ -174,6 +174,18 @@ describe('decide — sandbox × policy × rules', () => {
     expect(decide(w, 'run_shell', ctx, 'on-request', 'rm somefile').action).toBe('ask')
   })
 
+  it('a remembered write_file rule matches despite path-spelling differences', () => {
+    // Rule pattern is stored normalized (as classify builds it): d:/proj/a.txt
+    const ctx = {
+      sandbox: 'workspace-write' as const,
+      workspaceRoot: 'D:/proj',
+      rules: [{ pattern: '^d:/proj/a\\.txt$', action: 'allow' as const, tool: 'write_file' }]
+    }
+    // Subject is the raw Windows-style path the loop forwards.
+    const w = classify('write_file', { path: 'D:\\proj\\a.txt', content: '' }, ctx)
+    expect(decide(w, 'write_file', ctx, 'on-request', 'D:\\proj\\a.txt').action).toBe('auto')
+  })
+
   it('a deny rule hard-blocks (even what would otherwise be allowed)', () => {
     const ctxDeny = { ...ww, rules: [{ pattern: '^rm', action: 'deny' as const }] }
     const d = classify('run_shell', { command: 'rm -rf x' }, ctxDeny)

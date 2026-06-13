@@ -5,6 +5,9 @@ export interface LLMConfig {
   model: string
   temperature?: number
   maxTokens?: number
+  /** Wire protocol — reserved seam for the Anthropic provider (openai today).
+   *  See docs/2026-06-14-desktop-agent-Anthropic格式兼容调研.md. */
+  protocol?: 'openai' | 'anthropic'
 }
 
 // ===== Message Types =====
@@ -208,6 +211,35 @@ export interface ModelConfig {
   /** The model's context window in tokens, for context-budget enforcement.
    *  Optional: when absent, a conservative default is used. Editing models.json
    *  lets users set this per model (e.g. GLM-5.1 vs DeepSeek differ). */
+  contextWindow?: number
+  /** Wire protocol. 'openai' = OpenAI-compatible (/chat/completions, /models).
+   *  'anthropic' is reserved (Messages API). Defaults to 'openai'. */
+  protocol?: 'openai' | 'anthropic'
+  /** Models available under this provider. Absent/empty → falls back to `model`. */
+  models?: ProviderModel[]
+  /** The provider's default model id (used when a session picks the provider
+   *  without choosing a specific model). Defaults to `model` when absent. */
+  defaultModel?: string
+}
+
+/** A model entry within a provider's list. */
+export interface ProviderModel {
+  id: string
+  contextWindow?: number
+}
+
+/** A ModelConfig IS a provider (additive evolution; the rename to `Provider` is
+ *  deferred to avoid churn in the session/chat layer while it's being refactored
+ *  concurrently). This alias lets new code speak "provider". */
+export type Provider = ModelConfig
+
+/** Effective connection + chosen model, resolved from a provider (+ optional
+ *  model id). This is what the LLM send path consumes. */
+export interface ResolvedModel {
+  apiKey: string
+  baseUrl: string
+  model: string
+  protocol: 'openai' | 'anthropic'
   contextWindow?: number
 }
 

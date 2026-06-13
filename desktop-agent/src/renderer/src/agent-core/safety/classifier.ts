@@ -291,7 +291,12 @@ export function decide(
     return { action: 'deny', assessment, reason: '路径为空' }
   }
   if (ctx.rules && subject) {
-    const subj = subject.trim()
+    // Normalize file paths the same way the stored rule patterns were built
+    // (classify() runs the path through normalizePath: lowercase drive,
+    // backslash→slash). Without this, a rule remembered for `D:\proj\a.txt`
+    // wouldn't match the raw subject `D:\proj\a.txt` in a later session/write.
+    const subj =
+      name === 'write_file' || name === 'read_file' ? normalizePath(subject.trim()) : subject.trim()
     const matches = (pat: string): boolean => {
       try { return new RegExp(pat).test(subj) } catch { return false }
     }
