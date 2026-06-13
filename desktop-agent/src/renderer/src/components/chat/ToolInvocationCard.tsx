@@ -8,6 +8,13 @@ const RISK_TONE: Record<RiskLevel, { label: string; color: string }> = {
   dangerous: { label: 'DANGER', color: 'var(--color-danger)' }
 }
 
+// Tool-call lifecycle label/tone, shown as a badge while running or on failure.
+const STATUS_META = {
+  running: { label: '调用中', color: 'var(--color-accent)' },
+  success: { label: '完成', color: 'var(--color-ok)' },
+  failed: { label: '失败', color: 'var(--color-danger)' }
+} as const
+
 /** Try to recover stdout/stderr from a run_shell result content. */
 function parseShellOutput(content: string): { stdout: string; stderr: string } | null {
   try {
@@ -90,7 +97,15 @@ export function ToolInvocationCard({ message }: { message: Message }): React.Rea
     )
   }
 
-  const headerTone = message.isError ? 'var(--color-danger)' : risk?.color ?? 'var(--color-faint)'
+  // Lifecycle: 'running' while executing (or awaiting approval), else terminal.
+  // Old messages (no status) derive from isError. Drives icon / tone / badge.
+  const status: 'running' | 'success' | 'failed' = message.status ?? (message.isError ? 'failed' : 'success')
+  const isRunning = status === 'running'
+  const headerTone = isRunning
+    ? 'var(--color-accent)'
+    : status === 'failed'
+      ? 'var(--color-danger)'
+      : risk?.color ?? 'var(--color-faint)'
   const sum = summary(name, args)
 
   // Full-detail body, only when expanded.
@@ -169,8 +184,16 @@ export function ToolInvocationCard({ message }: { message: Message }): React.Rea
           title={open ? '收起' : '展开详情'}
         >
           <span className="shrink-0 font-mono text-[11px]" style={{ color: headerTone }}>
-            {message.isError ? '✕' : '⚙'} {name}
+            {isRunning ? <span className="inline-block animate-spin">⚙</span> : status === 'failed' ? '✕' : '⚙'} {name}
           </span>
+          {(isRunning || status === 'failed') && (
+            <span
+              className="shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] tracking-wider"
+              style={{ color: STATUS_META[status].color, borderColor: `color-mix(in srgb, ${STATUS_META[status].color} 40%, transparent)` }}
+            >
+              {STATUS_META[status].label}
+            </span>
+          )}
           {risk && (
             <span
               className="shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] tracking-wider"
@@ -183,9 +206,9 @@ export function ToolInvocationCard({ message }: { message: Message }): React.Rea
             <span className="text-accent">{sum.icon}</span> {sum.text}
           </span>
           {ms !== undefined && <span className="shrink-0 font-mono text-[10px] text-faint">{ms}ms</span>}
-          <span className="shrink-0 font-mono text-[10px] text-faint">{open ? '▾' : '▸'}</span>
+          {!isRunning && <span className="shrink-0 font-mono text-[10px] text-faint">{open ? '▾' : '▸'}</span>}
         </button>
-        {open && <div className="border-t border-line/60 px-3 py-2">{body}</div>}
+        {open && !isRunning && <div className="border-t border-line/60 px-3 py-2">{body}</div>}
       </div>
     </div>
   )

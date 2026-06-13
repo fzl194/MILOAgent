@@ -17,6 +17,7 @@ interface SessionState {
   ensureActiveSessionInProject: (projectId: string) => Promise<void>
   setMessages: (msgs: Message[]) => void
   addMessage: (msg: Message) => void
+  updateToolMessage: (toolCallId: string, patch: Partial<Message>) => void
   saveCurrentMessages: () => Promise<void>
   persistIndex: () => Promise<void>
 }
@@ -124,6 +125,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setMessages: (msgs) => set({ currentMessages: msgs }),
   addMessage: (msg) => set((st) => ({ currentMessages: [...st.currentMessages, msg] })),
+  // Update a tool message in place (matched by toolCallId) — used to transition
+  // a tool-call card from 'running' to 'success'/'failed' on the SAME element
+  // rather than removing+re-adding it.
+  updateToolMessage: (toolCallId, patch) =>
+    set((st) => ({
+      currentMessages: st.currentMessages.map((m) =>
+        m.role === 'tool' && m.toolCallId === toolCallId ? { ...m, ...patch } : m
+      )
+    })),
 
   saveCurrentMessages: async () => {
     const { activeSessionId, currentMessages } = get()

@@ -30,6 +30,10 @@ export interface Message {
   toolArgs?: Record<string, unknown>
   durationMs?: number
   riskLevel?: RiskLevel
+  // Tool-call lifecycle, surfaced in the UI: 'running' while the call is
+  // executing (or waiting on approval), 'success'/'failed' once it resolves.
+  // Older persisted tool messages have no status → treated as terminal.
+  status?: 'running' | 'success' | 'failed'
   timestamp: number
 }
 
@@ -231,6 +235,10 @@ export interface ProjectConfig {
   sandbox?: SandboxMode
   approvalPolicy?: ApprovalPolicy
   defaultModelId?: string
+  /** Per-project shell command rules (regex sources, run_shell only).
+   *  deny → hard block; allow → auto-run (except intrinsically dangerous).
+   *  Mirrors Codex's deny > ask > allow precedence. */
+  commandRules?: { allow?: string[]; deny?: string[] }
 }
 
 export interface Project {

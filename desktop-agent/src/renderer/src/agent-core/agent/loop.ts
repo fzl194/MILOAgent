@@ -335,7 +335,8 @@ export class AgentLoop {
 
     const assessment = classify(name, args, this.safety.ctx)
     const allowlisted = this.allowlisted(name, args)
-    const decision = decide(assessment, name, this.safety.ctx, this.safety.policy, allowlisted)
+    const command = name === 'run_shell' ? String(args.command ?? '') : undefined
+    const decision = decide(assessment, name, this.safety.ctx, this.safety.policy, allowlisted, command)
 
     if (decision.action === 'deny') {
       return { action: 'deny', riskLevel: assessment.level, deniedMessage: decision.reason }

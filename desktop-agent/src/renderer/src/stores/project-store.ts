@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Project } from '../agent-core/types'
+import type { Project, ProjectConfig } from '../agent-core/types'
 
 // Project-level management. A Project is a named record pointing at a working
 // directory (dirPath); the directory path is the project's logical identity
@@ -26,6 +26,10 @@ interface ProjectState {
   /** Re-check every project's directory existence; updates `dirMissing`. */
   refreshDirMissing: () => Promise<void>
   rename: (id: string, name: string) => Promise<void>
+  /** Merge a partial config patch into a project's overrides (effective = global ← project). */
+  updateConfig: (id: string, patch: Partial<ProjectConfig>) => Promise<void>
+  /** Re-point a project at a different existing directory (realpath + dedup). */
+  updateDir: (id: string, dirPath: string) => Promise<void>
   remove: (id: string) => Promise<void>
   getDefault: () => Project | undefined
   getActive: () => Project | undefined
@@ -158,6 +162,33 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   rename: async (id, name) => {
     set((st) => ({ projects: st.projects.map((p) => (p.id === id ? { ...p, name, updatedAt: Date.now() } : p)) }))
     await get().persist()
+  },
+
+  updateConfig: async (id, patch) => {
+    set((st) => ({
+      projects: st.projects.map((p) =>
+        p.id === id ? { ...p, config: { ...(p.config ?? {}), ...patch }, updatedAt: Date.now() } : p
+      )
+    }))
+    await get().persist()
+  },
+
+  updateDir: async (id, dirPath) => {
+    // The default project is intentionally dirless; never bind a directory to it.
+    if (get().projects.find((p) => p.id === id)?.isDefault) {
+      throw new Error('默认项目不能绑定目录')
+    }
+    const rp = await window.electronAPI.realpathProject(dirPath)
+    if (!rp.success || !rp.data) throw new Error(rp.error || '路径解析失败')
+    const real = rp.data
+    if (get().projects.some((p) => p.id !== id && p.dirPath === real)) {
+      throw new Error('该目录已被其他项目占用')
+    }
+    set((st) => ({
+      projects: st.projects.map((p) => (p.id === id ? { ...p, dirPath: real, updatedAt: Date.now() } : p))
+    }))
+    await get().persist()
+    await get().refreshDirMissing()
   },
 
   remove: async (id) => {

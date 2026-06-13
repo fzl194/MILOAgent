@@ -22,6 +22,7 @@ export interface ClassifyContext {
   sandbox: SandboxMode
   workspaceRoot?: string
   cwd?: string // turn-scoped project dir; the loop resolves relative paths against it
+  commandRules?: { allow?: string[]; deny?: string[] } // per-project shell rules (regex sources)
 }
 
 export type SafetyAction = 'auto' | 'ask' | 'deny'
@@ -255,7 +256,8 @@ export function decide(
   name: string,
   ctx: ClassifyContext,
   policy: ApprovalPolicy,
-  allowlisted: boolean
+  allowlisted: boolean,
+  command?: string
 ): Decision {
   const { level } = assessment
 
@@ -264,6 +266,41 @@ export function decide(
   //    side-effect-free on a personal build with no kernel sandbox.
   if (ctx.sandbox === 'read-only' && name !== 'read_file') {
     return { action: 'deny', assessment, reason: '只读沙箱下禁止写入与命令执行' }
+  }
+
+  // 1.5) Per-project command rules (run_shell only). An empty/whitespace
+  //      command is denied outright (it's never a valid tool arg). deny rules
+  //      hard-block (Codex "deny" wins); allow auto-runs EXCEPT intrinsically
+  //      dangerous commands and commands containing shell metacharacters
+  //      (including newlines, which act as command separators under `shell:true`
+  //      and would let an unanchored rule auto-run a chained payload). Rules
+  //      match the trimmed command; malformed regex is skipped.
+  if (name === 'run_shell' && command !== undefined) {
+    const cmd = command.trim()
+    if (!cmd) return { action: 'deny', assessment, reason: '命令为空' }
+    if (ctx.commandRules) {
+      for (const pat of ctx.commandRules.deny ?? []) {
+        try {
+          if (new RegExp(pat).test(cmd)) {
+            return { action: 'deny', assessment, reason: `项目规则拒绝（匹配 ${pat}）` }
+          }
+        } catch {
+          /* skip malformed deny pattern */
+        }
+      }
+      const hasShellMeta = /[|;&`$>\r\n]/.test(cmd)
+      if (level !== 'dangerous' && !hasShellMeta) {
+        for (const pat of ctx.commandRules.allow ?? []) {
+          try {
+            if (new RegExp(pat).test(cmd)) {
+              return { action: 'auto', assessment, reason: `项目规则允许（匹配 ${pat}）` }
+            }
+          } catch {
+            /* skip malformed allow pattern */
+          }
+        }
+      }
+    }
   }
 
   // 2) Safe reads always run automatically.

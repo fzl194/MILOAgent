@@ -10,7 +10,6 @@ interface MessageListProps {
   messages: Message[]
   currentText: string
   isStreaming: boolean
-  activeToolCalls: string[]
 }
 
 const avatarStyle: React.CSSProperties = {
@@ -81,8 +80,12 @@ function Hero(): React.ReactElement {
   )
 }
 
-export function MessageList({ messages, currentText, isStreaming, activeToolCalls }: MessageListProps): React.ReactElement {
+export function MessageList({ messages, currentText, isStreaming }: MessageListProps): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
+  // A tool call is mid-flight → its card already shows "调用中" inline, so the
+  // generic thinking indicator is suppressed (only show it when the model is
+  // actually generating text and nothing is executing).
+  const anyToolRunning = messages.some((m) => m.role === 'tool' && m.status === 'running')
 
   // Auto-scroll on new content, but throttled to one animation frame. During
   // streaming, currentText changes per token — calling a synchronous scroll each
@@ -95,7 +98,7 @@ export function MessageList({ messages, currentText, isStreaming, activeToolCall
       el.scrollTop = el.scrollHeight
     })
     return () => cancelAnimationFrame(id)
-  }, [messages, currentText, activeToolCalls])
+  }, [messages, currentText])
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto overscroll-contain">
@@ -130,29 +133,9 @@ export function MessageList({ messages, currentText, isStreaming, activeToolCall
           return out
         })()}
 
-        {activeToolCalls.length > 0 && (
-          <div className="rise max-w-[85%] pl-[2.375rem]">
-            <div className="glass flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs">
-              <span className="inline-block animate-spin">⚙️</span>
-              <span className="min-w-0 flex-1 truncate font-mono text-muted">
-                {activeToolCalls.length > 1 ? (
-                  <>
-                    执行 {activeToolCalls.length} 个工具 · <span className="text-accent">{activeToolCalls.join(', ')}</span>
-                  </>
-                ) : (
-                  <>
-                    exec · <span className="text-accent">{activeToolCalls[0]}</span>
-                  </>
-                )}
-              </span>
-              <span className="ml-auto cursor-blink text-accent">▍</span>
-            </div>
-          </div>
-        )}
-
         {isStreaming && currentText && <StreamingPreview text={currentText} />}
 
-        {isStreaming && !currentText && activeToolCalls.length === 0 && <StreamingIndicator />}
+        {isStreaming && !currentText && !anyToolRunning && <StreamingIndicator />}
 
         <ApprovalCard />
       </div>

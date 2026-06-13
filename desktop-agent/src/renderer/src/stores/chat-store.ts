@@ -8,7 +8,8 @@ import type {
   OpenAIChatMessage,
   ApprovalRequest,
   ApprovalDecision,
-  ApprovalSource
+  ApprovalSource,
+  ProjectConfig
 } from '../agent-core/types'
 import { AgentLoop, type LoopDoneEvent, type AgentSafety } from '../agent-core/agent/loop'
 import { DefaultContextStrategy, DEFAULT_CONTEXT_WINDOW } from '../agent-core/agent/context-strategy'
@@ -110,12 +111,20 @@ function activeProjectDir(): string | undefined {
   return active?.dirPath && !ps.dirMissing[active.id] ? active.dirPath : undefined
 }
 
-// Tell the model where it is so it can answer "which directory am I in?" and use
-// relative paths intentionally. Appended to the user's global system prompt.
-function injectCwd(base: string, dir?: string): string {
-  if (!dir) return base
+// The active project's config overrides (undefined for the default project).
+function activeProjectConfig(): ProjectConfig | undefined {
+  return useProjectStore.getState().getActive()?.config
+}
+
+// Compose the effective system prompt: global base ← project prompt ← cwd note.
+function buildSystemPrompt(base: string, projectPrompt: string | undefined, dir?: string): string {
+  let s = base.trim()
+  if (projectPrompt && projectPrompt.trim()) {
+    s = s ? `${s}\n\n${projectPrompt.trim()}` : projectPrompt.trim()
+  }
+  if (!dir) return s
   const note = `# 工作目录\n你的当前工作目录是 \`${dir}\`。相对路径基于此解析，shell 命令默认在此目录下执行；请优先在此目录内工作。`
-  return base.trim() ? `${base.trim()}\n\n${note}` : note
+  return s ? `${s}\n\n${note}` : note
 }
 
 // ---------------------------------------------------------------------------
@@ -137,9 +146,16 @@ function pushPendingApproval(req: ApprovalRequest): void {
 // used by the loop to resolve relative write_file paths before classification.
 function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): AgentSafety {
   const cfg = useConfigStore.getState().config
+  // Effective safety = global ← active project overrides.
+  const pcfg = useProjectStore.getState().getActive()?.config
   return {
-    ctx: { sandbox: cfg.sandbox, workspaceRoot: workspaceOverride ?? cfg.workspaceRoot, cwd },
-    policy: cfg.approvalPolicy,
+    ctx: {
+      sandbox: pcfg?.sandbox ?? cfg.sandbox,
+      workspaceRoot: workspaceOverride ?? cfg.workspaceRoot,
+      cwd,
+      commandRules: pcfg?.commandRules
+    },
+    policy: pcfg?.approvalPolicy ?? cfg.approvalPolicy,
     getAllowlist: () => useAllowlistStore.getState().all(),
     gate: {
       request: (req: ApprovalRequest) =>
@@ -164,7 +180,6 @@ function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): 
 interface ChatState {
   isStreaming: boolean
   currentText: string
-  activeToolCalls: string[]
   lastToolCallCount: number
   pendingApprovals: ApprovalRequest[]
   abortController: AbortController | null
@@ -177,7 +192,6 @@ interface ChatState {
 export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   currentText: '',
-  activeToolCalls: [],
   lastToolCallCount: 0,
   pendingApprovals: [],
   abortController: null,
@@ -198,6 +212,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (ctrl && !ctrl.signal.aborted) ctrl.abort()
     for (const [, fn] of approvalResolvers) fn({ approved: false, reason: '用户停止' })
     approvalResolvers.clear()
+    // Finalize any tool calls still mid-flight so their cards don't hang in the
+    // "calling…" state after the user stops.
+    const ss = useSessionStore.getState()
+    for (const m of ss.currentMessages) {
+      if (m.role === 'tool' && m.status === 'running' && m.toolCallId) {
+        ss.updateToolMessage(m.toolCallId, { status: 'failed', isError: true, content: m.content || '已停止' })
+      }
+    }
     set({ pendingApprovals: [] })
   },
 
@@ -209,7 +231,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Serialize turns: a double-click, rapid Enter, or direct store call must
     // not start a second concurrent turn — turn-scoped state (abortController,
-    // currentText, activeToolCalls, approvalResolvers, currentShell) would race.
+    // currentText, approvalResolvers, currentShell) would race.
     if (get().isStreaming) return
 
     const sessionId = sessionStore.activeSessionId
@@ -217,14 +239,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     sessionStore.addMessage(userMsg)
 
     const controller = new AbortController()
-    set({ isStreaming: true, currentText: '', activeToolCalls: [], lastToolCallCount: 0, abortController: controller })
+    set({ isStreaming: true, currentText: '', lastToolCallCount: 0, abortController: controller })
 
     const session = sessionStore.sessions.find((s) => s.id === sessionId)
-    const modelConfig = session ? modelStore.getModel(session.modelConfigId) : modelStore.getDefaultModel()
+    // Model resolution: session's model → project default → global default.
+    const projDefaultId = useProjectStore.getState().getActive()?.config?.defaultModelId
+    let modelConfig = session ? modelStore.getModel(session.modelConfigId) : undefined
+    if (!modelConfig && projDefaultId) modelConfig = modelStore.getModel(projDefaultId)
+    if (!modelConfig) modelConfig = modelStore.getDefaultModel()
 
     if (!modelConfig || !modelConfig.apiKey) {
       sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: '请先在管理面板中配置模型 API Key。', timestamp: Date.now() })
-      set({ isStreaming: false, currentText: '', activeToolCalls: [], abortController: null })
+      set({ isStreaming: false, currentText: '', abortController: null })
       await sessionStore.saveCurrentMessages()
       return
     }
@@ -232,9 +258,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const config = loadConfig()
     // Bind the turn to the active project: inject the working directory into the
     // system prompt and use it as the safety workspace boundary (unless the
-    // session overrides workspaceRoot).
+    // session overrides workspaceRoot). Effective config = global ← project.
     const projDir = activeProjectDir()
-    const turnConfig: AgentConfig = { ...config, systemPrompt: injectCwd(config.systemPrompt, projDir) }
+    const pcfg = activeProjectConfig()
+    const turnConfig: AgentConfig = {
+      ...config,
+      sandbox: pcfg?.sandbox ?? config.sandbox,
+      approvalPolicy: pcfg?.approvalPolicy ?? config.approvalPolicy,
+      systemPrompt: buildSystemPrompt(config.systemPrompt, pcfg?.systemPrompt, projDir)
+    }
     const turnId = crypto.randomUUID()
 
     // Ensure a session_meta row exists (written once per session)
@@ -299,33 +331,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break
           case 'tool_call_start':
             toolCallCount++
-            set((s) => ({ activeToolCalls: [...s.activeToolCalls, (event.data as { name: string }).name] }))
             break
           case 'tool_executed': {
             const d = event.data as ToolExecutedEventData
-            // Remove the matching "running" indicator by tool name (robust to
-            // out-of-order completion when multiple tools run in one turn)
-            set((s) => {
-              const idx = s.activeToolCalls.indexOf(d.name)
-              if (idx < 0) return s
-              const next = [...s.activeToolCalls]
-              next.splice(idx, 1)
-              return { activeToolCalls: next }
-            })
-            // Mirror the tool message into currentMessages — fixes multi-turn context.
-            // Carries rich-rendering metadata (toolName/args/duration/risk) for the UI.
-            sessionStore.addMessage({
-              id: crypto.randomUUID(),
-              role: 'tool',
-              content: d.result,
-              toolCallId: d.toolCallId,
-              isError: d.isError,
-              toolName: d.name,
-              toolArgs: d.arguments,
-              durationMs: d.durationMs,
-              riskLevel: d.riskLevel,
-              timestamp: Date.now()
-            })
+            // Transition this call's card from "calling…" to success/failed IN
+            // PLACE. A 'running' placeholder was inserted on the `done` event
+            // (matched by toolCallId); update it so the SAME card animates. Fall
+            // back to append if no placeholder exists (defensive).
+            const status: Message['status'] = d.isError ? 'failed' : 'success'
+            // Read currentMessages FRESH from the store — the `sessionStore`
+            // captured at turn start holds a stale snapshot that doesn't include
+            // the placeholders added this turn, so a stale read would miss the
+            // placeholder, fall back to addMessage, and create a duplicate
+            // (running + failed) card for the same call.
+            const existing = useSessionStore
+              .getState()
+              .currentMessages.find((m) => m.role === 'tool' && m.toolCallId === d.toolCallId)
+            if (existing) {
+              sessionStore.updateToolMessage(d.toolCallId, {
+                content: d.result,
+                isError: d.isError,
+                toolName: d.name,
+                toolArgs: d.arguments,
+                durationMs: d.durationMs,
+                riskLevel: d.riskLevel,
+                status
+              })
+            } else {
+              sessionStore.addMessage({
+                id: crypto.randomUUID(),
+                role: 'tool',
+                content: d.result,
+                toolCallId: d.toolCallId,
+                isError: d.isError,
+                toolName: d.name,
+                toolArgs: d.arguments,
+                durationMs: d.durationMs,
+                riskLevel: d.riskLevel,
+                status,
+                timestamp: Date.now()
+              })
+            }
             // Persist the atomic tool_call event
             await safeAppendTrace(sessionId,{
               type: 'tool_call',
@@ -360,6 +406,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
             for (const m of d.appendedMessages) {
               if (m.role === 'assistant') {
                 sessionStore.addMessage({ ...m, modelConfigId: modelConfig.id })
+              }
+            }
+
+            // Tool-calling round: insert a 'running' placeholder per tool call so
+            // its card can animate running → success/failed in place when
+            // tool_executed lands. Placed AFTER the assistant message (correct
+            // position); matched + updated by toolCallId on tool_executed.
+            if (d.finishReason === 'tool_calls') {
+              for (const tc of d.toolCalls) {
+                let parsedArgs: Record<string, unknown>
+                try {
+                  parsedArgs = JSON.parse(tc.arguments)
+                } catch {
+                  parsedArgs = {}
+                }
+                sessionStore.addMessage({
+                  id: crypto.randomUUID(),
+                  role: 'tool',
+                  content: '',
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  toolArgs: parsedArgs,
+                  status: 'running',
+                  timestamp: Date.now()
+                })
               }
             }
 
@@ -439,17 +510,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (partial.trim()) {
           sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: partial, timestamp: Date.now() })
         }
-        set({ isStreaming: false, currentText: '', activeToolCalls: [], abortController: null })
+        set({ isStreaming: false, currentText: '', abortController: null })
         await sessionStore.saveCurrentMessages()
       }
     } catch (err: any) {
       if (!controller.signal.aborted) {
         sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `意外错误: ${err.message}`, isError: true, timestamp: Date.now() })
       }
-      set({ isStreaming: false, currentText: '', activeToolCalls: [], abortController: null })
+      set({ isStreaming: false, currentText: '', abortController: null })
       await sessionStore.saveCurrentMessages()
     }
   },
 
-  clearCurrent: () => set({ currentText: '', isStreaming: false, activeToolCalls: [] })
+  clearCurrent: () => set({ currentText: '', isStreaming: false })
 }))

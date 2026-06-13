@@ -5,6 +5,7 @@ import { useProjectStore } from '../../stores/project-store'
 import { SessionItem } from './SessionItem'
 import { NewSessionDialog } from './NewSessionDialog'
 import { NewProjectDialog } from './NewProjectDialog'
+import { ProjectSettingsDialog } from './ProjectSettingsDialog'
 import { AdminPanel } from '../admin/AdminPanel'
 import { useThemeStore } from '../../stores/theme-store'
 
@@ -14,6 +15,7 @@ export function Sidebar(): React.ReactElement {
   const { projects, activeProjectId, setActive, dirMissing, refreshDirMissing } = useProjectStore()
   const [showNewSession, setShowNewSession] = useState(false)
   const [showNewProject, setShowNewProject] = useState(false)
+  const [editProjectId, setEditProjectId] = useState<string | null>(null)
   const [adminTab, setAdminTab] = useState<string | null>(null)
   const theme = useThemeStore((s) => s.theme)
   const toggleTheme = useThemeStore((s) => s.toggle)
@@ -98,11 +100,9 @@ export function Sidebar(): React.ReactElement {
             {orderedProjects.map((p) => {
               const active = p.id === activeProjectId
               return (
-                <button
+                <div
                   key={p.id}
-                  onClick={() => handleSelectProject(p.id)}
-                  title={p.dirPath ?? '默认项目（不绑定目录）'}
-                  className={`group relative flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
+                  className={`group relative flex items-center gap-1 rounded-lg text-xs transition ${
                     active ? 'bg-elevated text-fg' : 'text-muted hover:bg-card/60 hover:text-fg'
                   }`}
                 >
@@ -112,14 +112,31 @@ export function Sidebar(): React.ReactElement {
                       style={{ background: 'linear-gradient(var(--color-accent), var(--color-accent2))' }}
                     />
                   )}
-                  <span className={`shrink-0 ${p.isDefault ? 'text-accent' : 'text-faint'}`}>{p.isDefault ? '◉' : '▣'}</span>
-                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                  {dirMissing[p.id] && (
-                    <span className="shrink-0 text-[9px] text-danger" title={`目录缺失：${p.dirPath ?? ''}`}>
-                      ⚠
-                    </span>
-                  )}
-                </button>
+                  <button
+                    onClick={() => handleSelectProject(p.id)}
+                    title={p.dirPath ?? '默认项目（不绑定目录）'}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left"
+                  >
+                    <span className={`shrink-0 ${p.isDefault ? 'text-accent' : 'text-faint'}`}>{p.isDefault ? '◉' : '▣'}</span>
+                    <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                    {dirMissing[p.id] && (
+                      <span className="shrink-0 text-[9px] text-danger" title={`目录缺失：${p.dirPath ?? ''}`}>
+                        ⚠
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setEditProjectId(p.id)}
+                    className="shrink-0 rounded p-1 text-faint opacity-0 transition hover:text-accent group-hover:opacity-100"
+                    title="项目设置"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="1" />
+                      <circle cx="19" cy="12" r="1" />
+                      <circle cx="5" cy="12" r="1" />
+                    </svg>
+                  </button>
+                </div>
               )
             })}
           </div>
@@ -184,6 +201,11 @@ export function Sidebar(): React.ReactElement {
 
       {showNewSession && <NewSessionDialog onSelect={handleNewSession} onClose={() => setShowNewSession(false)} />}
       {showNewProject && <NewProjectDialog onClose={() => setShowNewProject(false)} />}
+      {editProjectId &&
+        (() => {
+          const p = projects.find((x) => x.id === editProjectId)
+          return p ? <ProjectSettingsDialog project={p} onClose={() => setEditProjectId(null)} /> : null
+        })()}
       {adminTab && <AdminPanel tab={adminTab} onClose={() => setAdminTab(null)} />}
     </>
   )
