@@ -19,6 +19,7 @@ import { useModelStore } from './model-store'
 import { useStatsStore } from './stats-store'
 import { useConfigStore } from './config-store'
 import { useAllowlistStore } from './allowlist-store'
+import { useProjectStore } from './project-store'
 import { ALL_TOOLS } from '../agent-core/tools/definitions'
 
 function estimateTokens(text: string): number {
@@ -101,6 +102,22 @@ function loadConfig(): AgentConfig {
   return useConfigStore.getState().config
 }
 
+// The active project's directory, when bound and present. The agent's shell and
+// relative file paths run inside it; the default project (no dir) returns undefined.
+function activeProjectDir(): string | undefined {
+  const ps = useProjectStore.getState()
+  const active = ps.getActive()
+  return active?.dirPath && !ps.dirMissing[active.id] ? active.dirPath : undefined
+}
+
+// Tell the model where it is so it can answer "which directory am I in?" and use
+// relative paths intentionally. Appended to the user's global system prompt.
+function injectCwd(base: string, dir?: string): string {
+  if (!dir) return base
+  const note = `# 工作目录\n你的当前工作目录是 \`${dir}\`。相对路径基于此解析，shell 命令默认在此目录下执行；请优先在此目录内工作。`
+  return base.trim() ? `${base.trim()}\n\n${note}` : note
+}
+
 // ---------------------------------------------------------------------------
 // Approval gate: the AgentLoop calls gate.request(req) when a tool call needs
 // human approval. The request is pushed into `pendingApprovals` (rendered as an
@@ -116,11 +133,12 @@ function pushPendingApproval(req: ApprovalRequest): void {
 
 // Build the safety config handed to the AgentLoop for one turn. Reads fresh
 // sandbox/policy/workspace from the config store (with a session-level workspace
-// override) and the combined allowlist.
-function buildSafety(turnId: string, workspaceOverride?: string): AgentSafety {
+// override) and the combined allowlist. `cwd` is the turn-scoped project dir,
+// used by the loop to resolve relative write_file paths before classification.
+function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): AgentSafety {
   const cfg = useConfigStore.getState().config
   return {
-    ctx: { sandbox: cfg.sandbox, workspaceRoot: workspaceOverride ?? cfg.workspaceRoot },
+    ctx: { sandbox: cfg.sandbox, workspaceRoot: workspaceOverride ?? cfg.workspaceRoot, cwd },
     policy: cfg.approvalPolicy,
     getAllowlist: () => useAllowlistStore.getState().all(),
     gate: {
@@ -211,7 +229,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
 
-    const config = await loadConfig()
+    const config = loadConfig()
+    // Bind the turn to the active project: inject the working directory into the
+    // system prompt and use it as the safety workspace boundary (unless the
+    // session overrides workspaceRoot).
+    const projDir = activeProjectDir()
+    const turnConfig: AgentConfig = { ...config, systemPrompt: injectCwd(config.systemPrompt, projDir) }
     const turnId = crypto.randomUUID()
 
     // Ensure a session_meta row exists (written once per session)
@@ -224,7 +247,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           sessionId,
           modelConfigId: modelConfig.id,
           model: modelConfig.model,
-          systemPrompt: config.systemPrompt,
+          systemPrompt: turnConfig.systemPrompt,
           temperature: modelConfig.temperature,
           maxTokens: modelConfig.maxTokens,
           tools: ALL_TOOLS.map((t) => t.name),
@@ -254,12 +277,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       contextWindow: modelConfig.contextWindow ?? DEFAULT_CONTEXT_WINDOW
     })
 
+    // Freeze the turn's cwd on the executor so tool execution can't drift if the
+    // user switches project mid-turn (approval wait).
+    executor.setCwd(projDir)
+
     const loop = new AgentLoop(
       { apiKey: modelConfig.apiKey, baseUrl: modelConfig.baseUrl, model: modelConfig.model, temperature: modelConfig.temperature, maxTokens: modelConfig.maxTokens },
       executor,
-      config,
+      turnConfig,
       history,
-      buildSafety(turnId, session?.workspaceRoot),
+      buildSafety(turnId, session?.workspaceRoot ?? projDir, projDir),
       controller.signal,
       contextStrategy
     )

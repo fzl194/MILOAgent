@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, Menu, dialog } from 'electron'
-import { join } from 'path'
+import { join, resolve, isAbsolute } from 'path'
 import { readFile, writeFile, mkdir, unlink, readdir, access, realpath, stat } from 'fs/promises'
 import { appendFile } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
@@ -116,6 +116,13 @@ async function writeJson(p: string, d: unknown): Promise<void> {
   await writeFile(p, JSON.stringify(d, null, 2), 'utf-8')
 }
 
+// Resolve a (possibly relative) path against a working directory. Used so the
+// agent's read_file/write_file calls honor the active project's directory: a
+// relative path is interpreted under `cwd`, an absolute path is left as-is.
+function resolveUnder(p: string, cwd?: string): string {
+  return cwd && !isAbsolute(p) ? resolve(cwd, p) : p
+}
+
 // Serialize writes to stats/events.jsonl: append (per-turn recording) and prune
 // (session deletion) both touch the same file; running them concurrently would
 // lose events. This chain guarantees one writer at a time.
@@ -127,12 +134,12 @@ function serializeStatsWrite(fn: () => Promise<void>): Promise<void> {
 }
 
 // ===== FS & Shell =====
-ipcMain.handle('fs:readFile', async (_, p: string) => {
-  try { return { success: true, data: await readFile(p, 'utf-8') } }
+ipcMain.handle('fs:readFile', async (_, p: string, cwd?: string) => {
+  try { return { success: true, data: await readFile(resolveUnder(p, cwd), 'utf-8') } }
   catch (e: any) { return { success: false, error: e.message } }
 })
-ipcMain.handle('fs:writeFile', async (_, p: string, c: string) => {
-  try { await mkdir(join(p, '..'), { recursive: true }); await writeFile(p, c, 'utf-8'); return { success: true } }
+ipcMain.handle('fs:writeFile', async (_, p: string, c: string, cwd?: string) => {
+  try { const rp = resolveUnder(p, cwd); await mkdir(join(rp, '..'), { recursive: true }); await writeFile(rp, c, 'utf-8'); return { success: true } }
   catch (e: any) { return { success: false, error: e.message } }
 })
 // Tracks the currently-running shell so a user "stop" can kill it. Turns are
@@ -164,7 +171,17 @@ function killTree(child: ChildProcess): void {
   }
 }
 
-ipcMain.handle('shell:run', async (_, cmd: string) => {
+ipcMain.handle('shell:run', async (_, cmd: string, cwd?: string) => {
+  // Validate the requested cwd up front: a missing/non-dir cwd would otherwise
+  // surface as an opaque spawn error. Return a clear failure instead.
+  if (cwd) {
+    try {
+      const st = await stat(cwd)
+      if (!st.isDirectory()) return { success: false, error: '工作目录不是目录：' + cwd }
+    } catch {
+      return { success: false, error: '工作目录不存在：' + cwd }
+    }
+  }
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
@@ -179,7 +196,9 @@ ipcMain.handle('shell:run', async (_, cmd: string) => {
     }
     // detached on Unix makes the child a process-group leader so killTree can
     // kill the whole group; ignored on Windows (we use taskkill /T there).
-    const child = spawn(cmd, { shell: true, detached: process.platform !== 'win32' })
+    // cwd (when provided = the active project's directory) makes the shell run
+    // inside that project; without it the shell would run in the app's launch dir.
+    const child = spawn(cmd, { shell: true, detached: process.platform !== 'win32', ...(cwd ? { cwd } : {}) })
     currentShell = child
     child.stdout?.on('data', (d) => {
       stdout += d.toString()

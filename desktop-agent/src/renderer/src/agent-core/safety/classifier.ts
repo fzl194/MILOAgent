@@ -21,6 +21,7 @@ import type {
 export interface ClassifyContext {
   sandbox: SandboxMode
   workspaceRoot?: string
+  cwd?: string // turn-scoped project dir; the loop resolves relative paths against it
 }
 
 export type SafetyAction = 'auto' | 'ask' | 'deny'

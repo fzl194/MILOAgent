@@ -156,7 +156,7 @@ export function ToolInvocationCard({ message }: { message: Message }): React.Rea
   }
 
   return (
-    <div className="rise">
+    <div className="rise max-w-[85%] pl-[2.375rem]">
       <div
         className="rounded-xl border bg-card/60 shadow-md backdrop-blur-sm"
         style={{ borderColor: `color-mix(in srgb, ${headerTone} 35%, transparent)` }}

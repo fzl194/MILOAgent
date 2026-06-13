@@ -1,9 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const electronAPI = {
-  readFile: (p: string) => ipcRenderer.invoke('fs:readFile', p),
-  writeFile: (p: string, c: string) => ipcRenderer.invoke('fs:writeFile', p, c),
-  runShell: (cmd: string) => ipcRenderer.invoke('shell:run', cmd),
+  readFile: (p: string, cwd?: string) => ipcRenderer.invoke('fs:readFile', p, cwd),
+  writeFile: (p: string, c: string, cwd?: string) => ipcRenderer.invoke('fs:writeFile', p, c, cwd),
+  runShell: (cmd: string, cwd?: string) => ipcRenderer.invoke('shell:run', cmd, cwd),
   cancelShell: () => ipcRenderer.invoke('shell:cancel'),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
   readConfig: () => ipcRenderer.invoke('config:read'),

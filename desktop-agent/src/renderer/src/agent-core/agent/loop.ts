@@ -198,6 +198,23 @@ export class AgentLoop {
                 parsedArgs = {}
               }
 
+              // Resolve a relative write_file path against the turn cwd BEFORE
+              // classification/execution, so the workspace-boundary check and the
+              // executor see the same absolute path. Without this, "foo.txt" would
+              // be compared against an absolute project root and wrongly flagged
+              // as outside the workspace.
+              const cwd = this.safety?.ctx.cwd
+              if (
+                tc.name === 'write_file' &&
+                cwd &&
+                typeof parsedArgs.path === 'string' &&
+                !/^[A-Za-z]:[\\/]/.test(parsedArgs.path) && // Windows drive-absolute
+                !/^[\\/]/.test(parsedArgs.path) && // leading slash/backslash
+                !parsedArgs.path.startsWith('\\\\') // UNC
+              ) {
+                parsedArgs = { ...parsedArgs, path: cwd.replace(/\/+$/, '') + '/' + parsedArgs.path }
+              }
+
               let result: ToolResult
               let riskLevel: RiskLevel | undefined
               let approvedBy: ApprovalSource | undefined

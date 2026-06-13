@@ -1,9 +1,9 @@
 import type { Project } from '../agent-core/types'
 
 export interface ElectronAPI {
-  readFile: (p: string) => Promise<{ success: boolean; data?: string; error?: string }>
-  writeFile: (p: string, c: string) => Promise<{ success: boolean; error?: string }>
-  runShell: (cmd: string) => Promise<{ success: boolean; data?: { stdout: string; stderr: string }; error?: string }>
+  readFile: (p: string, cwd?: string) => Promise<{ success: boolean; data?: string; error?: string }>
+  writeFile: (p: string, c: string, cwd?: string) => Promise<{ success: boolean; error?: string }>
+  runShell: (cmd: string, cwd?: string) => Promise<{ success: boolean; data?: { stdout: string; stderr: string }; error?: string }>
   cancelShell: () => Promise<{ success: boolean }>
   pickFolder: () => Promise<{ success: boolean; data?: string | null }>
   readConfig: () => Promise<{ success: boolean; data: Record<string, any> | null }>

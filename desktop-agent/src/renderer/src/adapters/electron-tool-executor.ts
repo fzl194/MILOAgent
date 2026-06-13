@@ -1,23 +1,34 @@
 import type { ToolExecutor, ToolResult } from '../agent-core/types'
 
 export class ElectronToolExecutor implements ToolExecutor {
+  // Turn-scoped working directory (the active project's dirPath), frozen per
+  // turn by chat-store via setCwd(). Reading the live active project at execute
+  // time would race if the user switches project mid-turn (during an approval
+  // wait) — the model/safety would see one cwd while tools run in another.
+  private cwd: string | undefined
+
+  setCwd(dir?: string): void {
+    this.cwd = dir
+  }
+
   async execute(
     name: string,
     args: Record<string, unknown>,
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
+      const cwd = this.cwd
       let result: { success: boolean; data?: any; error?: string }
 
       switch (name) {
         case 'read_file':
-          result = await window.electronAPI.readFile(args.path as string)
+          result = await window.electronAPI.readFile(args.path as string, cwd)
           break
         case 'write_file':
-          result = await window.electronAPI.writeFile(args.path as string, args.content as string)
+          result = await window.electronAPI.writeFile(args.path as string, args.content as string, cwd)
           break
         case 'run_shell': {
-          const runP = window.electronAPI.runShell(args.command as string)
+          const runP = window.electronAPI.runShell(args.command as string, cwd)
           // If a cancel signal fires mid-run, kill the tracked child process.
           // The runShell promise then resolves (via the close handler) and we
           // surface a clear "aborted" result rather than a half-finished one.
