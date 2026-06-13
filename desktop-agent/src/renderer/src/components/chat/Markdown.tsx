@@ -45,15 +45,19 @@ const components: Components = {
 
 interface Props {
   children: string
+  /** Apply syntax highlighting. Defaults to true; the live streaming preview
+   *  passes false because re-running highlight.js every frame is the dominant
+   *  per-token cost. The finalized bubble re-parses WITH highlighting. */
+  highlight?: boolean
 }
 
 /** Shared markdown renderer (remark-gfm + highlight.js + copyable code blocks).
  *  Used by BOTH the finalized assistant bubble and the live streaming preview, so
  *  partial output renders as real markdown while streaming (no "raw text then pop"
  *  at the end) and there's zero layout shift when the stream finishes. */
-export function Markdown({ children }: Props): React.ReactElement {
+export function Markdown({ children, highlight = true }: Props): React.ReactElement {
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={highlight ? [rehypeHighlight] : []} components={components}>
       {children}
     </ReactMarkdown>
   )

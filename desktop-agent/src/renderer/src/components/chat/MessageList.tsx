@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Message } from '../../agent-core/types'
 import { MessageBubble } from './MessageBubble'
 import { StreamingIndicator } from './StreamingIndicator'
@@ -16,6 +16,45 @@ interface MessageListProps {
 const avatarStyle: React.CSSProperties = {
   backgroundImage: 'linear-gradient(135deg, var(--color-accent), var(--color-accent2))',
   boxShadow: '0 0 18px -4px var(--color-accent)'
+}
+
+/** Live streaming markdown preview. Two perf measures vs. rendering markdown
+ *  straight off `text` every token:
+ *   1. Re-parse is coalesced to ONCE PER ANIMATION FRAME — tokens arrive faster
+ *      than frames, so rendering every delta re-parses markdown needlessly and
+ *      janks. We snapshot the latest text into local state via rAF.
+ *   2. Syntax highlighting is OFF while streaming (highlight.js auto-detection
+ *      per parse is the single most expensive part). The finalized bubble
+ *      re-renders WITH highlighting once the turn ends.
+ *  The memoized `rendered` node also ensures that between frames — when `text`
+ *  keeps changing but `shown` hasn't advanced yet — we don't re-parse at all. */
+function StreamingPreview({ text }: { text: string }): React.ReactElement {
+  const [shown, setShown] = useState(text)
+  const latest = useRef(text)
+  latest.current = text
+  useEffect(() => {
+    // Each token schedules one rAF; React cancels the previous effect's rAF on
+    // re-run, so at most one is ever pending → at most one re-parse per frame.
+    const id = requestAnimationFrame(() => setShown(latest.current))
+    return () => cancelAnimationFrame(id)
+  }, [text])
+  const rendered = useMemo(() => <Markdown highlight={false}>{shown}</Markdown>, [shown])
+  return (
+    <div className="flex justify-start rise">
+      <div className="flex max-w-[85%] gap-2.5">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-on-accent" style={avatarStyle}>
+          ◆
+        </div>
+        <div className="min-w-0">
+          <div className="label-tag mb-1">MILO</div>
+          <div className="md-body rounded-2xl rounded-tl-sm border border-line/70 bg-panel/60 px-4 py-3 shadow-lg backdrop-blur-sm">
+            {rendered}
+            <span className="cursor-blink text-accent">▍</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function Hero(): React.ReactElement {
@@ -111,22 +150,7 @@ export function MessageList({ messages, currentText, isStreaming, activeToolCall
           </div>
         )}
 
-        {isStreaming && currentText && (
-          <div className="flex justify-start rise">
-            <div className="flex max-w-[85%] gap-2.5">
-              <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-on-accent" style={avatarStyle}>
-                ◆
-              </div>
-              <div className="min-w-0">
-                <div className="label-tag mb-1">MILO</div>
-                <div className="md-body rounded-2xl rounded-tl-sm border border-line/70 bg-panel/60 px-4 py-3 shadow-lg backdrop-blur-sm">
-                  <Markdown>{currentText}</Markdown>
-                  <span className="cursor-blink text-accent">▍</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {isStreaming && currentText && <StreamingPreview text={currentText} />}
 
         {isStreaming && !currentText && activeToolCalls.length === 0 && <StreamingIndicator />}
 

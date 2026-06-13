@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { Message } from '../../agent-core/types'
 import { ToolInvocationCard } from './ToolInvocationCard'
 import { Markdown } from './Markdown'
@@ -6,7 +7,7 @@ interface Props {
   message: Message
 }
 
-export function MessageBubble({ message }: Props): React.ReactNode {
+function MessageBubbleBase({ message }: Props): React.ReactNode {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
 
@@ -76,3 +77,9 @@ export function MessageBubble({ message }: Props): React.ReactNode {
     </div>
   )
 }
+
+// memo: during streaming, `currentText` changes every token and re-renders
+// MessageList — but committed bubbles have nothing to update, so skip them.
+// Message objects are append-only (stable references), so a shallow prop
+// compare is enough to keep every existing bubble from re-running ReactMarkdown.
+export const MessageBubble = memo(MessageBubbleBase)
