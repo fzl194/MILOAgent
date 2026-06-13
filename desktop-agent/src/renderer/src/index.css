@@ -1,0 +1,368 @@
+@import "tailwindcss";
+
+/* ============================================================
+   OBSIDION · Aether Console — design system
+   Dark, cool-toned "AI command deck" aesthetic.
+   Fonts: Chakra Petch (display/labels) · Sora (body) · JetBrains Mono (numbers/code)
+   ============================================================ */
+
+@theme {
+  /* Surfaces (cool charcoal, not pure black) */
+  --color-base: #080a0f;
+  --color-surface: #0e121b;
+  --color-panel: #121724;
+  --color-card: #171d2b;
+  --color-elevated: #1f2736;
+  --color-line: #252d3e;
+
+  /* Text */
+  --color-fg: #e8ecf5;
+  --color-muted: #98a1b6;
+  --color-faint: #5b6479;
+
+  /* Accents */
+  --color-accent: #2dd4ee;   /* electric cyan */
+  --color-accent2: #7c83ff;  /* indigo */
+  --color-warn: #f4b350;     /* amber */
+  --color-danger: #ff6b6b;
+  --color-ok: #34d399;
+
+  /* Foreground on top of the accent gradient (logos, avatars, primary buttons).
+     Dark text on the bright dark-theme accent; white on the deeper light-theme accent. */
+  --color-on-accent: #04141a;
+  /* Terminal / code-block surface + text */
+  --color-term-bg: #0a0e16;
+  --color-term-fg: #c9d1d9;
+
+  /* Fonts */
+  --font-display: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+}
+
+/* ============================================================
+   Light theme — override the dark @theme variables under [data-theme="light"].
+   Every component reads var(--color-*), so this flips the whole UI at runtime;
+   no per-component changes needed (toggled via theme-store on <html>).
+   ============================================================ */
+[data-theme="light"] {
+  --color-base: #f4f5f7;
+  --color-surface: #ffffff;
+  --color-panel: #ffffff;
+  --color-card: #f8f9fb;
+  --color-elevated: #ffffff;
+  --color-line: #e3e7ee;
+  --color-fg: #1a1f2e;
+  --color-muted: #586173;
+  --color-faint: #8b94a8;
+  --color-accent: #0891b2;
+  --color-accent2: #6366f1;
+  --color-warn: #c2790a;
+  --color-danger: #dc2626;
+  --color-ok: #059669;
+  --color-on-accent: #ffffff;
+  --color-term-bg: #eef1f6;
+  --color-term-fg: #24292f;
+}
+[data-theme="light"] body {
+  background-color: var(--color-base);
+}
+[data-theme="light"] .glass {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 60%, transparent), 0 8px 28px -12px rgba(15, 23, 42, 0.16);
+}
+[data-theme="light"] .glass-strong {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 70%, transparent), 0 20px 60px -20px rgba(15, 23, 42, 0.22);
+}
+[data-theme="light"] .app-aura::after {
+  opacity: 0.3;
+}
+
+/* ---------- Base ---------- */
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background-color: var(--color-base);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: var(--color-fg);
+}
+
+/* ---------- Scrollbars ---------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(var(--color-line), color-mix(in srgb, var(--color-accent2) 30%, var(--color-line)));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-accent) 45%, var(--color-line));
+  background-clip: padding-box;
+}
+
+/* ---------- Atmosphere: layered glows + grid ---------- */
+.app-aura {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60rem 40rem at 12% -10%, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent 60%),
+    radial-gradient(55rem 38rem at 110% 10%, color-mix(in srgb, var(--color-accent2) 20%, transparent), transparent 60%),
+    radial-gradient(40rem 30rem at 50% 120%, color-mix(in srgb, var(--color-accent2) 12%, transparent), transparent 55%);
+}
+.app-aura::after {
+  /* faint technical grid */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--color-fg) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--color-fg) 4%, transparent) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(ellipse at 50% 40%, #000 30%, transparent 80%);
+  opacity: 0.5;
+}
+/* fine grain overlay for texture */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------- Glass surfaces ---------- */
+.glass {
+  background: color-mix(in srgb, var(--color-panel) 72%, transparent);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 6%, transparent), 0 12px 40px -12px rgba(0, 0, 0, 0.7);
+}
+.glass-strong {
+  background: color-mix(in srgb, var(--color-panel) 88%, transparent);
+  backdrop-filter: blur(20px) saturate(130%);
+  -webkit-backdrop-filter: blur(20px) saturate(130%);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent), 0 30px 80px -20px rgba(0, 0, 0, 0.8);
+}
+.hairline {
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  cursor: pointer;
+  user-select: none;
+}
+.btn:active {
+  transform: translateY(1px) scale(0.99);
+}
+.btn-primary {
+  color: var(--color-on-accent);
+  font-weight: 600;
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent2));
+  box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--color-accent) 60%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.btn-primary:hover {
+  box-shadow: 0 12px 30px -8px color-mix(in srgb, var(--color-accent) 80%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  filter: brightness(1.05);
+}
+.btn-ghost {
+  color: var(--color-muted);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+.btn-ghost:hover {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+/* ---------- Inputs ---------- */
+.field {
+  width: 100%;
+  background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  border: 1px solid var(--color-line);
+  border-radius: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
+  color: var(--color-fg);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  outline: none;
+}
+.field::placeholder {
+  color: var(--color-faint);
+}
+.field:focus {
+  border-color: color-mix(in srgb, var(--color-accent) 65%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  background: var(--color-card);
+}
+.label-tag {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+/* ---------- Accent text helpers ---------- */
+.text-grad {
+  background: linear-gradient(120deg, var(--color-accent), var(--color-accent2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.brand {
+  font-family: var(--font-display);
+  letter-spacing: 0.06em;
+}
+
+/* ---------- Animations ---------- */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.06); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes barGrow {
+  from { height: 0; }
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+@keyframes floaty {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.rise { animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.pulse-glow { animation: pulseGlow 2.6s ease-in-out infinite; }
+.floaty { animation: floaty 5s ease-in-out infinite; }
+.cursor-blink { animation: blink 1.1s steps(1) infinite; }
+
+/* shimmering sheen for hero title */
+.sheen {
+  background: linear-gradient(100deg, var(--color-fg) 30%, var(--color-accent) 50%, var(--color-fg) 70%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 6s linear infinite;
+}
+
+/* ============================================================
+   Markdown body (assistant messages) — dark theme
+   ============================================================ */
+.md-body {
+  font-size: 0.875rem;
+  line-height: 1.7;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: var(--color-fg);
+}
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p { margin: 0.45rem 0; }
+.md-body h1 { font-family: var(--font-display); font-size: 1.3rem; font-weight: 600; margin: 0.9rem 0 0.4rem; line-height: 1.25; color: var(--color-fg); }
+.md-body h2 { font-family: var(--font-display); font-size: 1.12rem; font-weight: 600; margin: 0.8rem 0 0.35rem; line-height: 1.25; color: var(--color-fg); }
+.md-body h3 { font-size: 1rem; font-weight: 600; margin: 0.7rem 0 0.3rem; color: var(--color-fg); }
+.md-body h4 { font-size: 0.95rem; font-weight: 600; margin: 0.6rem 0 0.3rem; color: var(--color-fg); }
+.md-body ul { list-style: none; margin: 0.45rem 0; padding-left: 0.2rem; }
+.md-body ol { list-style: none; margin: 0.45rem 0; padding-left: 0.2rem; counter-reset: olc; }
+.md-body li { position: relative; margin: 0.2rem 0; padding-left: 1.3rem; }
+.md-body ul > li::before {
+  content: "";
+  position: absolute;
+  left: 0.15rem;
+  top: 0.62rem;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: linear-gradient(135deg, var(--color-accent), var(--color-accent2));
+}
+.md-body ol > li::before {
+  content: counter(olc) ".";
+  counter-increment: olc;
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  color: var(--color-accent);
+}
+.md-body li > input[type="checkbox"] { margin-right: 0.4rem; accent-color: var(--color-accent); }
+.md-body blockquote {
+  border-left: 2px solid var(--color-accent2);
+  margin: 0.55rem 0;
+  padding: 0.15rem 0 0.15rem 0.85rem;
+  color: var(--color-muted);
+  background: color-mix(in srgb, var(--color-accent2) 8%, transparent);
+  border-radius: 0 0.4rem 0.4rem 0;
+}
+.md-body a { color: var(--color-accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent); word-break: break-all; }
+.md-body a:hover { color: var(--color-fg); border-bottom-color: var(--color-accent); }
+.md-body strong { font-weight: 600; color: var(--color-fg); }
+.md-body hr { border: 0; border-top: 1px solid var(--color-line); margin: 0.9rem 0; }
+
+.md-body table { width: 100%; border-collapse: collapse; margin: 0.55rem 0; font-size: 0.8rem; display: block; overflow-x: auto; }
+.md-body th, .md-body td { border: 1px solid var(--color-line); padding: 0.4rem 0.6rem; text-align: left; }
+.md-body th { background: color-mix(in srgb, var(--color-accent2) 14%, transparent); font-family: var(--font-mono); font-size: 0.72em; letter-spacing: 0.04em; color: var(--color-fg); }
+
+/* inline code */
+.md-body code {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+  padding: 0.08rem 0.35rem;
+  border-radius: 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+/* block code reset — let highlight.js tokens + dark <pre> show through */
+.md-body pre { margin: 0; }
+.md-body pre code,
+.md-body pre code.hljs {
+  background: transparent;
+  color: var(--color-term-fg);
+  padding: 0;
+  font-size: 0.8rem;
+  border: 0;
+  border-radius: 0;
+}

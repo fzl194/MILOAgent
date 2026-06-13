@@ -1,0 +1,57 @@
+# ===== Dependencies =====
+node_modules/
+.pnp
+.pnp.js
+
+# ===== Build output =====
+# electron-vite compiled output (main/preload/renderer)
+out/
+# electron-builder packaged output
+dist/
+build/
+
+# ===== TypeScript =====
+*.tsbuildinfo
+
+# ===== Generated cache: understand-anything knowledge graph =====
+.understand-anything/
+
+# ===== Claude Code — only the local/personal settings =====
+# (shared .claude/settings.json & CLAUDE.md, if added later, stay tracked)
+.claude/settings.local.json
+
+# ===== Logs =====
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== Environment / secrets =====
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ===== Test coverage =====
+coverage/
+
+# ===== OS files =====
+.DS_Store
+Thumbs.db
+Thumbs.db:encryptable
+desktop.ini
+ehthumbs.db
+
+# ===== Editors =====
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== Misc =====
+.cache/
+.temp/
+tmp/
