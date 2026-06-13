@@ -106,7 +106,7 @@ export function GeneralSettings(): React.ReactElement {
               className="field font-mono"
             >
               {SANDBOX_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
+                <option key={o.value} value={o.value}>{o.value}</option>
               ))}
             </select>
             <div className="mt-1 font-mono text-[10px] text-faint">
@@ -121,7 +121,7 @@ export function GeneralSettings(): React.ReactElement {
               className="field font-mono"
             >
               {POLICY_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
+                <option key={o.value} value={o.value}>{o.value}</option>
               ))}
             </select>
             <div className="mt-1 font-mono text-[10px] text-faint">
