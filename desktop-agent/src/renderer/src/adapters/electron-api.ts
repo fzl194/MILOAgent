@@ -1,3 +1,5 @@
+import type { Project } from '../agent-core/types'
+
 export interface ElectronAPI {
   readFile: (p: string) => Promise<{ success: boolean; data?: string; error?: string }>
   writeFile: (p: string, c: string) => Promise<{ success: boolean; error?: string }>
@@ -8,6 +10,8 @@ export interface ElectronAPI {
   writeConfig: (cfg: object) => Promise<{ success: boolean; error?: string }>
   readAllowlist: () => Promise<{ success: boolean; data?: any[] }>
   writeAllowlist: (entries: unknown[]) => Promise<{ success: boolean; error?: string }>
+  listProjects: () => Promise<{ success: boolean; data?: Project[] }>
+  saveProjects: (projects: Project[]) => Promise<{ success: boolean; error?: string }>
   listModels: () => Promise<{ success: boolean; data?: any[] }>
   saveModels: (models: unknown[]) => Promise<{ success: boolean; error?: string }>
   listSessions: () => Promise<{ success: boolean; data?: any[] }>

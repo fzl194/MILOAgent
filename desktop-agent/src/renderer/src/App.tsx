@@ -6,6 +6,7 @@ import { useSessionStore } from './stores/session-store'
 import { useStatsStore } from './stores/stats-store'
 import { useConfigStore } from './stores/config-store'
 import { useAllowlistStore } from './stores/allowlist-store'
+import { useProjectStore } from './stores/project-store'
 
 // One-time cleanup of legacy config.json that may still hold dead LLM fields
 // (apiKey/baseUrl/model) left over from the removed GlobalConfig. Those values
@@ -20,7 +21,6 @@ async function migrateConfig(): Promise<void> {
     await window.electronAPI.writeConfig({
       systemPrompt: typeof c.systemPrompt === 'string' ? c.systemPrompt : '',
       maxToolRounds: typeof c.maxToolRounds === 'number' ? c.maxToolRounds : 5,
-      maxContextMessages: typeof c.maxContextMessages === 'number' ? c.maxContextMessages : 20,
       sandbox: c.sandbox ?? 'workspace-write',
       approvalPolicy: c.approvalPolicy ?? 'on-request',
       workspaceRoot: typeof c.workspaceRoot === 'string' ? c.workspaceRoot : undefined
@@ -34,11 +34,15 @@ function App(): React.ReactElement {
   const loadStats = useStatsStore((s) => s.loadStats)
   const loadConfig = useConfigStore((s) => s.load)
   const loadAllowlist = useAllowlistStore((s) => s.load)
+  const loadProjects = useProjectStore((s) => s.load)
 
   useEffect(() => {
     ;(async () => {
       await loadConfig()
       await loadAllowlist()
+      // Projects must load before sessions so new sessions can be assigned a
+      // projectId (and the sidebar can group by project).
+      await loadProjects()
       await loadModels()
       await loadSessions()
       await loadStats()

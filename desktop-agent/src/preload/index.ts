@@ -10,6 +10,9 @@ const electronAPI = {
   writeConfig: (cfg: object) => ipcRenderer.invoke('config:write', cfg),
   readAllowlist: () => ipcRenderer.invoke('allowlist:read'),
   writeAllowlist: (entries: unknown[]) => ipcRenderer.invoke('allowlist:write'),
+  // Projects
+  listProjects: () => ipcRenderer.invoke('project:list'),
+  saveProjects: (projects: unknown[]) => ipcRenderer.invoke('project:save', projects),
   // Models
   listModels: () => ipcRenderer.invoke('models:list'),
   saveModels: (models: unknown[]) => ipcRenderer.invoke('models:save', models),

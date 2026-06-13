@@ -17,6 +17,11 @@ import type { ToolExecutor } from '../tools/executor'
 import { LLMProvider } from '../llm/provider'
 import { ALL_TOOLS } from '../tools/definitions'
 import { ContextManager } from './context'
+import {
+  ContextStrategy,
+  DefaultContextStrategy,
+  DEFAULT_CONTEXT_WINDOW
+} from './context-strategy'
 import { classify, decide, allowlistAllows, type ClassifyContext } from '../safety/classifier'
 
 /** Shape of the `done` event data emitted by AgentLoop (extends the raw provider payload). */
@@ -57,9 +62,14 @@ export class AgentLoop {
     private agentConfig: AgentConfig,
     existingMessages?: Message[],
     private safety?: AgentSafety,
-    private signal?: AbortSignal
+    private signal?: AbortSignal,
+    contextStrategy?: ContextStrategy
   ) {
-    this.context = new ContextManager(agentConfig.maxContextMessages)
+    // ContextManager is the truth source; the strategy produces the bounded
+    // view sent to the LLM. If none is supplied (e.g. tests), use a default.
+    this.context = new ContextManager(
+      contextStrategy ?? new DefaultContextStrategy({ contextWindow: DEFAULT_CONTEXT_WINDOW })
+    )
     this.provider = new LLMProvider(llmConfig)
 
     // Load existing conversation history
@@ -103,11 +113,24 @@ export class AgentLoop {
     for (let round = 0; round < this.agentConfig.maxToolRounds; round++) {
       // A user "stop" between rounds ends the turn gracefully (no error shown).
       if (this.signal?.aborted) return
+
+      // Between-round compaction hook. P2 (Codex-style handoff summary) plugs in
+      // here via the strategy's maybeCompact; it is a no-op by default, so this
+      // only acts once a compaction strategy is supplied. Applied before building
+      // the request so the next round sees the compacted context.
+      // Strategy contract: maybeCompact MUST protect the latest assistant +
+      // tool-results block (don't summarise results the model hasn't consumed).
+      const compacted = await this.context.maybeCompact()
+      if (compacted) this.context.replaceMessages(compacted)
+
       const startedAt = Date.now()
-      const contextMsgCount = this.context.getMessages().length
+      // Build the bounded request view once; contextMsgCount reflects what is
+      // actually sent (post-compaction), not the full history length.
+      const requestMessages = this.context.toOpenAIMessages()
+      const contextMsgCount = requestMessages.length
 
       try {
-        const stream = this.provider.chat(this.context.toOpenAIMessages(), ALL_TOOLS, this.signal)
+        const stream = this.provider.chat(requestMessages, ALL_TOOLS, this.signal)
 
         for await (const event of stream) {
           if (event.type === 'text_delta') {

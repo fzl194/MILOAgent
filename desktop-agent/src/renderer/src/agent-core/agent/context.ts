@@ -1,31 +1,28 @@
 import type { Message, OpenAIChatMessage } from '../types'
+import type { ContextStrategy, ContextMetrics } from './context-strategy'
 
+/**
+ * ContextManager — the in-memory truth source for one turn's conversation.
+ *
+ * It holds the FULL message history (append-only). The bounded view that
+ * actually gets sent to the LLM is produced on demand by the injected
+ * {@link ContextStrategy} (tool-result trimming + token-budget backstop).
+ * Trimming never happens in add() — doing so was the "Gap C" bug,
+ * where front-trimming could orphan tool messages and trigger API 400s.
+ *
+ * See docs/2026-06-13-desktop-agent-上下文管理调研与选型.md.
+ */
 export class ContextManager {
   private messages: Message[] = []
-  private maxMessages: number
+  private strategy: ContextStrategy
 
-  constructor(maxMessages: number) {
-    this.maxMessages = maxMessages
+  constructor(strategy: ContextStrategy) {
+    this.strategy = strategy
   }
 
+  /** Truth source: append-only. No trimming here. */
   add(message: Message): void {
     this.messages.push(message)
-    // Trim from front, preserving message pair integrity
-    while (this.messages.length > this.maxMessages) {
-      // Never remove system message
-      if (this.messages[0]?.role === 'system') {
-        this.messages.splice(1, 1)
-        continue
-      }
-      // If removing an assistant msg with toolCalls, also remove following tool msgs
-      const removed = this.messages.shift()!
-      while (
-        this.messages.length > 0 &&
-        this.messages[0]?.role === 'tool'
-      ) {
-        this.messages.shift()
-      }
-    }
   }
 
   getMessages(): Message[] {
@@ -36,21 +33,44 @@ export class ContextManager {
     this.messages = []
   }
 
+  /** Metrics over the FULL history (for UI / threshold checks). */
+  metrics(): ContextMetrics {
+    return this.strategy.metrics(this.messages)
+  }
+
+  /** Bounded view of the full history (internal Message type) after the
+   *  strategy's cheap compactors have run. */
+  toView(): Message[] {
+    return this.strategy.toView(this.messages)
+  }
+
+  /** Between-turn compaction hook (delegates to the strategy). Returns a
+   *  compacted message list to replace the truth source, or null to keep it.
+   *  No-op unless the strategy implements expensive (LLM) compaction (P2). */
+  async maybeCompact(): Promise<Message[] | null> {
+    // Call BOUND (this.strategy.maybeCompact?.(...)) — extracting the method
+    // first would lose its binding and crash a class-based P2 strategy that
+    // reads `this`.
+    return this.strategy.maybeCompact?.(this.messages, this.strategy.metrics(this.messages)) ?? null
+  }
+
+  /** Replace the full history. Used by the compaction hook to commit a summary
+   *  back into the truth source. */
+  replaceMessages(replacement: Message[]): void {
+    this.messages = [...replacement]
+  }
+
   /**
-   * Convert the internal message history to the OpenAI chat-completions shape,
-   * enforcing the message invariant: every assistant tool_calls[id] must be
-   * followed by a tool message with the same tool_call_id, and every tool
-   * message must follow such a call.
-   *
-   * History can become inconsistent if a turn exits between committing an
-   * assistant(tool_calls) and appending its tool result (an exception in the
-   * tool loop, an app crash, or already-corrupted persisted state). Rather than
-   * send an invalid array and eat an API 400 ("insufficient tool messages
-   * following tool_calls message"), we self-heal: strip orphaned tool_calls
-   * (demoting the assistant message to plain text, or dropping it if empty) and
-   * drop orphaned tool results, logging a warning so the anomaly is visible.
+   * Convert the (compacted) view to the OpenAI chat-completions shape, enforcing
+   * the tool_calls pairing invariant as a final safety net. History can still be
+   * inconsistent (an exception mid-turn, a crash, or pre-existing corrupted
+   * state); rather than send an invalid array and eat an API 400 ("insufficient
+   * tool messages following tool_calls message"), we self-heal: strip orphaned
+   * tool_calls (demoting the assistant message to plain text, or dropping it if
+   * empty) and drop orphaned tool results, logging a warning when it happens.
    */
   toOpenAIMessages(): OpenAIChatMessage[] {
+    const view = this.toView()
     let strippedCalls = 0
     let strippedResults = 0
     const out: OpenAIChatMessage[] = []
@@ -62,15 +82,15 @@ export class ContextManager {
     // non-adjacent pair (e.g. assistant(tool_calls) → user → tool) that the API
     // still rejects. Per-block validation also avoids collapsing duplicate ids
     // across separate assistant messages.
-    for (let i = 0; i < this.messages.length; i++) {
-      const m = this.messages[i]
+    for (let i = 0; i < view.length; i++) {
+      const m = view[i]
 
       if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
         // Collect the contiguous run of tool messages directly after this one.
         const following: Message[] = []
         let j = i + 1
-        while (j < this.messages.length && this.messages[j].role === 'tool') {
-          following.push(this.messages[j])
+        while (j < view.length && view[j].role === 'tool') {
+          following.push(view[j])
           j++
         }
         const answeredHere = new Set(
@@ -100,8 +120,12 @@ export class ContextManager {
             function: { name: tc.name, arguments: tc.arguments }
           }))
         })
+        // Emit at most ONE tool result per kept id — duplicate tool_call_ids
+        // (from corruption/bugs) would otherwise yield an invalid array.
+        const emittedToolIds = new Set<string>()
         for (const t of following) {
-          if (t.toolCallId && keptIds.has(t.toolCallId)) {
+          if (t.toolCallId && keptIds.has(t.toolCallId) && !emittedToolIds.has(t.toolCallId)) {
+            emittedToolIds.add(t.toolCallId)
             out.push({ role: 'tool', content: t.content, tool_call_id: t.toolCallId })
           } else {
             strippedResults++

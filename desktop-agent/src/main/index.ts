@@ -1,14 +1,56 @@
 import { app, BrowserWindow, ipcMain, Menu, dialog } from 'electron'
 import { join } from 'path'
-import { readFile, writeFile, mkdir, unlink, readdir } from 'fs/promises'
+import { readFile, writeFile, mkdir, unlink, readdir, access } from 'fs/promises'
 import { appendFile } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
+import { randomUUID } from 'crypto'
 
 const DATA_DIR = () => join(app.getPath('home'), '.desktop-agent')
 const SESSIONS_DIR = () => join(DATA_DIR(), 'sessions')
 const STATS_DIR = () => join(DATA_DIR(), 'stats')
 const TRACES_DIR = () => join(DATA_DIR(), 'traces')
+const PROJECTS_FILE = () => join(DATA_DIR(), 'projects.json')
 let mainWindow: BrowserWindow | null = null
+
+async function pathExists(p: string): Promise<boolean> {
+  try { await access(p); return true } catch { return false }
+}
+
+// Remove every file directly under a directory (non-recursive — flat files only;
+// project-scoped subtrees are handled separately when they land). Used by the
+// danger-zone wipe and the one-time project migration.
+async function clearFlatFiles(dir: string): Promise<void> {
+  const files = await readdir(dir).catch(() => [])
+  for (const f of files) await unlink(join(dir, f)).catch(() => undefined)
+}
+
+// Enforce the default-project invariant on anything we persist: exactly one
+// project has isDefault=true. The renderer is not trusted — main canonicalizes
+// on every project:save so a malformed/empty/duplicate-default array can never
+// reach disk.
+function canonicalizeProjects(input: unknown): Record<string, unknown>[] {
+  const arr = Array.isArray(input) ? (input as any[]) : []
+  const valid = arr.filter((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
+  let sawDefault = false
+  const out: Record<string, unknown>[] = valid.map((p: any) => {
+    const isDefault = !!p.isDefault && !sawDefault ? ((sawDefault = true), true) : false
+    return {
+      id: p.id,
+      name: p.name,
+      dirPath: p.dirPath ?? null,
+      isDefault,
+      config: p.config,
+      createdAt: typeof p.createdAt === 'number' ? p.createdAt : Date.now(),
+      updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : Date.now()
+    }
+  })
+  if (!sawDefault && out.length) out[0].isDefault = true
+  if (!out.length) {
+    const now = Date.now()
+    out.push({ id: randomUUID(), name: '默认项目', dirPath: null, isDefault: true, createdAt: now, updatedAt: now })
+  }
+  return out
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -37,6 +79,32 @@ async function ensureDirs(): Promise<void> {
   await mkdir(SESSIONS_DIR(), { recursive: true })
   await mkdir(STATS_DIR(), { recursive: true })
   await mkdir(TRACES_DIR(), { recursive: true })
+  await runMigrationOnce()
+}
+
+// One-time migration to the project-level model, guarded by an in-process mutex
+// so concurrent IPC handlers share a single migration run (no double-wipe).
+// Order matters for crash safety: clear legacy data FIRST, then write
+// projects.json as the commit marker last. A crash mid-clear simply re-runs on
+// the next launch; once the marker exists, migration never touches legacy data
+// again.
+let migratePromise: Promise<void> | null = null
+function runMigrationOnce(): Promise<void> {
+  if (!migratePromise) {
+    migratePromise = (async () => {
+      if (await pathExists(PROJECTS_FILE())) return
+      await clearFlatFiles(SESSIONS_DIR())
+      await clearFlatFiles(TRACES_DIR())
+      await writeFile(join(STATS_DIR(), 'events.jsonl'), '', 'utf-8').catch(() => undefined)
+      await unlink(join(DATA_DIR(), 'index.json')).catch(() => undefined)
+      // Commit marker written last.
+      await writeJson(PROJECTS_FILE(), canonicalizeProjects([]))
+    })().catch((e) => {
+      migratePromise = null // allow a retry on failure
+      throw e
+    })
+  }
+  return migratePromise
 }
 
 async function readJson<T>(p: string, fb: T): Promise<T> {
@@ -158,6 +226,16 @@ ipcMain.handle('allowlist:read', async () => {
 })
 ipcMain.handle('allowlist:write', async (_, entries: unknown[]) => {
   try { await writeJson(join(DATA_DIR(), 'allowlist.json'), entries); return { success: true } }
+  catch (e: any) { return { success: false, error: e.message } }
+})
+
+// ===== Projects =====
+ipcMain.handle('project:list', async () => {
+  await ensureDirs()
+  return { success: true, data: await readJson(PROJECTS_FILE(), []) }
+})
+ipcMain.handle('project:save', async (_, projects: unknown[]) => {
+  try { await ensureDirs(); await writeJson(PROJECTS_FILE(), canonicalizeProjects(projects)); return { success: true } }
   catch (e: any) { return { success: false, error: e.message } }
 })
 
@@ -299,15 +377,14 @@ ipcMain.handle('stats:pruneBySession', async (_, sid: string) => {
 ipcMain.handle('data:clearAll', async () => {
   try {
     await ensureDirs()
-    const clearDir = async (dir: string): Promise<void> => {
-      const files = await readdir(dir).catch(() => [])
-      for (const f of files) await unlink(join(dir, f)).catch(() => undefined)
-    }
-    await clearDir(SESSIONS_DIR())
-    await clearDir(TRACES_DIR())
+    await clearFlatFiles(SESSIONS_DIR())
+    await clearFlatFiles(TRACES_DIR())
     await writeFile(join(STATS_DIR(), 'events.jsonl'), '', 'utf-8')
     await writeJson(join(DATA_DIR(), 'index.json'), [])
-    await writeJson(join(DATA_DIR(), 'config.json'), { systemPrompt: '', maxToolRounds: 5, maxContextMessages: 20 })
+    // Reset projects to a fresh default directly (don't rely on a later
+    // migration re-running, which could race with renderer writes).
+    await writeJson(PROJECTS_FILE(), canonicalizeProjects([]))
+    await writeJson(join(DATA_DIR(), 'config.json'), { systemPrompt: '', maxToolRounds: 5 })
     // NOTE: models.json is intentionally left untouched.
     return { success: true }
   } catch (e: any) {

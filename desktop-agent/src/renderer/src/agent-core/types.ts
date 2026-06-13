@@ -176,7 +176,6 @@ export interface ToolExecutedEventData {
 // ===== Agent Config =====
 export interface AgentConfig {
   maxToolRounds: number
-  maxContextMessages: number
   systemPrompt: string
   sandbox: SandboxMode
   approvalPolicy: ApprovalPolicy
@@ -205,6 +204,10 @@ export interface ModelConfig {
   temperature?: number
   maxTokens?: number
   isDefault?: boolean
+  /** The model's context window in tokens, for context-budget enforcement.
+   *  Optional: when absent, a conservative default is used. Editing models.json
+   *  lets users set this per model (e.g. GLM-5.1 vs DeepSeek differ). */
+  contextWindow?: number
 }
 
 // ===== Session =====
@@ -212,10 +215,33 @@ export interface Session {
   id: string
   title: string
   modelConfigId: string
+  projectId: string // which Project this session belongs to
   createdAt: number
   updatedAt: number
   messageCount: number
   workspaceRoot?: string // session-level override of the global workspace root
+}
+
+// ===== Project =====
+// A Project is an explicit, named record that points at a working directory
+// (dirPath). The directory path (realpath) is the project's logical identity
+// (mirroring Codex/Claude "project = cwd"). The Default Project has dirPath =
+// null — users can chat without creating a project.
+export interface ProjectConfig {
+  systemPrompt?: string // project-level system prompt (stacked atop global) — = project memory
+  sandbox?: SandboxMode
+  approvalPolicy?: ApprovalPolicy
+  defaultModelId?: string
+}
+
+export interface Project {
+  id: string
+  name: string
+  dirPath: string | null // normalized realpath; null for the default project
+  isDefault: boolean // exactly one project has this true
+  config?: ProjectConfig // project-level overrides (effective = global ← project)
+  createdAt: number
+  updatedAt: number
 }
 
 // ===== Usage Statistics =====
@@ -268,7 +294,6 @@ export interface SessionMetaTrace {
   temperature?: number
   maxTokens?: number
   maxToolRounds: number
-  maxContextMessages: number
   tools: string[]
   startedAt: number
 }

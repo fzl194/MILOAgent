@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import { useSessionStore } from '../../stores/session-store'
 import { useModelStore } from '../../stores/model-store'
+import { useProjectStore } from '../../stores/project-store'
 import { SessionItem } from './SessionItem'
 import { NewSessionDialog } from './NewSessionDialog'
 import { AdminPanel } from '../admin/AdminPanel'
 import { useThemeStore } from '../../stores/theme-store'
 
 export function Sidebar(): React.ReactElement {
-  const { sessions, activeSessionId, switchSession, createSession, deleteSession, renameSession } = useSessionStore()
+  const { sessions, activeSessionId, switchSession, createSession, deleteSession, renameSession, ensureActiveSessionInProject } = useSessionStore()
   const models = useModelStore((s) => s.models)
+  const { projects, activeProjectId, setActive } = useProjectStore()
   const [showNewSession, setShowNewSession] = useState(false)
   const [adminTab, setAdminTab] = useState<string | null>(null)
   const theme = useThemeStore((s) => s.theme)
@@ -18,15 +20,34 @@ export function Sidebar(): React.ReactElement {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   const yesterday = today - 86400000
 
-  const groups: { label: string; sessions: typeof sessions }[] = [
-    { label: '今天', sessions: sessions.filter((s) => s.updatedAt >= today) },
-    { label: '昨天', sessions: sessions.filter((s) => s.updatedAt >= yesterday && s.updatedAt < today) },
-    { label: '更早', sessions: sessions.filter((s) => s.updatedAt < yesterday) }
+  // Only sessions of the active project are shown; switching project filters them.
+  const projectSessions = sessions.filter((s) => s.projectId === activeProjectId)
+  const groups: { label: string; sessions: typeof projectSessions }[] = [
+    { label: '今天', sessions: projectSessions.filter((s) => s.updatedAt >= today) },
+    { label: '昨天', sessions: projectSessions.filter((s) => s.updatedAt >= yesterday && s.updatedAt < today) },
+    { label: '更早', sessions: projectSessions.filter((s) => s.updatedAt < yesterday) }
   ]
+
+  // Default project always sorts first; then by updatedAt desc.
+  const orderedProjects = [...projects].sort((a, b) => {
+    if (a.isDefault) return -1
+    if (b.isDefault) return 1
+    return b.updatedAt - a.updatedAt
+  })
 
   const handleNewSession = async (modelConfigId: string): Promise<void> => {
     setShowNewSession(false)
     await createSession('新会话', modelConfigId)
+  }
+
+  const handleSelectProject = async (pid: string): Promise<void> => {
+    setActive(pid)
+    // Keep the chat panel consistent with the selected project's sessions.
+    try {
+      await ensureActiveSessionInProject(pid)
+    } catch (e) {
+      console.error('[project] switch failed', e)
+    }
   }
 
   // NOTE: NewSessionDialog and AdminPanel are rendered as SIBLINGS of the glass
@@ -56,7 +77,37 @@ export function Sidebar(): React.ReactElement {
           </button>
         </div>
 
-        <div className="px-3 pb-2">
+        {/* Projects: switch the active project; sessions below filter to it. */}
+        <div className="px-3 pb-1 pt-1">
+          <div className="px-1 pb-1 font-mono text-[9px] tracking-[0.25em] text-faint">项目</div>
+          <div className="space-y-0.5">
+            {orderedProjects.map((p) => {
+              const active = p.id === activeProjectId
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => handleSelectProject(p.id)}
+                  title={p.dirPath ?? '默认项目（不绑定目录）'}
+                  className={`group relative flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
+                    active ? 'bg-elevated text-fg' : 'text-muted hover:bg-card/60 hover:text-fg'
+                  }`}
+                >
+                  {active && (
+                    <span
+                      className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full"
+                      style={{ background: 'linear-gradient(var(--color-accent), var(--color-accent2))' }}
+                    />
+                  )}
+                  <span className={`shrink-0 ${p.isDefault ? 'text-accent' : 'text-faint'}`}>{p.isDefault ? '◉' : '▣'}</span>
+                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                  {!p.dirPath && !p.isDefault && <span className="shrink-0 text-[9px] text-danger" title="目录缺失">⚠</span>}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="px-3 pb-2 pt-1.5">
           <button
             onClick={() => {
               if (models.length === 1) handleNewSession(models[0].id)
@@ -86,7 +137,7 @@ export function Sidebar(): React.ReactElement {
               </div>
             ) : null
           )}
-          {sessions.length === 0 && <div className="px-3 py-10 text-center text-xs text-faint">暂无会话</div>}
+          {projectSessions.length === 0 && <div className="px-3 py-10 text-center text-xs text-faint">该项目暂无会话</div>}
         </div>
 
         <div className="border-t border-line/60 p-2">

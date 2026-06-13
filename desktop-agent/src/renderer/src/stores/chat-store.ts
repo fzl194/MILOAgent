@@ -11,6 +11,7 @@ import type {
   ApprovalSource
 } from '../agent-core/types'
 import { AgentLoop, type LoopDoneEvent, type AgentSafety } from '../agent-core/agent/loop'
+import { DefaultContextStrategy, DEFAULT_CONTEXT_WINDOW } from '../agent-core/agent/context-strategy'
 import { LLMProvider } from '../agent-core/llm/provider'
 import { ElectronToolExecutor } from '../adapters/electron-tool-executor'
 import { useSessionStore } from './session-store'
@@ -226,7 +227,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           temperature: modelConfig.temperature,
           maxTokens: modelConfig.maxTokens,
           maxToolRounds: config.maxToolRounds,
-          maxContextMessages: config.maxContextMessages,
           tools: ALL_TOOLS.map((t) => t.name),
           startedAt: Date.now()
         })
@@ -247,13 +247,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let turnOutputTokens = 0
     let turnUsageSource: 'api' | 'partial' | 'estimated' = 'api'
 
+    // Build the model-aware context strategy: token budget uses the active
+    // model's declared context window (falls back to a conservative default),
+    // and the message-count cap comes from the agent config.
+    const contextStrategy = new DefaultContextStrategy({
+      contextWindow: modelConfig.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+    })
+
     const loop = new AgentLoop(
       { apiKey: modelConfig.apiKey, baseUrl: modelConfig.baseUrl, model: modelConfig.model, temperature: modelConfig.temperature, maxTokens: modelConfig.maxTokens },
       executor,
       config,
       history,
       buildSafety(turnId, session?.workspaceRoot),
-      controller.signal
+      controller.signal,
+      contextStrategy
     )
 
     try {

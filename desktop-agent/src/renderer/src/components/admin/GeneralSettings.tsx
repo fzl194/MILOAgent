@@ -5,7 +5,6 @@ import type { SandboxMode, ApprovalPolicy } from '../../agent-core/types'
 interface FormState {
   systemPrompt: string
   maxToolRounds: number
-  maxContextMessages: number
   sandbox: SandboxMode
   approvalPolicy: ApprovalPolicy
   workspaceRoot: string
@@ -30,7 +29,6 @@ export function GeneralSettings(): React.ReactElement {
   const [form, setForm] = useState<FormState>({
     systemPrompt: '',
     maxToolRounds: 5,
-    maxContextMessages: 20,
     sandbox: 'workspace-write',
     approvalPolicy: 'on-request',
     workspaceRoot: ''
@@ -49,7 +47,6 @@ export function GeneralSettings(): React.ReactElement {
     setForm({
       systemPrompt: config.systemPrompt,
       maxToolRounds: config.maxToolRounds,
-      maxContextMessages: config.maxContextMessages,
       sandbox: config.sandbox,
       approvalPolicy: config.approvalPolicy,
       workspaceRoot: config.workspaceRoot ?? ''
@@ -60,7 +57,6 @@ export function GeneralSettings(): React.ReactElement {
     await save({
       systemPrompt: form.systemPrompt,
       maxToolRounds: form.maxToolRounds,
-      maxContextMessages: form.maxContextMessages,
       sandbox: form.sandbox,
       approvalPolicy: form.approvalPolicy,
       workspaceRoot: form.workspaceRoot.trim() || undefined
@@ -103,29 +99,16 @@ export function GeneralSettings(): React.ReactElement {
           className="field resize-none font-sans leading-relaxed"
         />
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="label-tag mb-1.5 block">最大工具轮数</label>
-          <input
-            type="number"
-            value={form.maxToolRounds}
-            onChange={(e) => setForm({ ...form, maxToolRounds: parseInt(e.target.value) || 5 })}
-            min={1}
-            max={20}
-            className="field font-mono"
-          />
-        </div>
-        <div>
-          <label className="label-tag mb-1.5 block">最大上下文消息</label>
-          <input
-            type="number"
-            value={form.maxContextMessages}
-            onChange={(e) => setForm({ ...form, maxContextMessages: parseInt(e.target.value) || 20 })}
-            min={5}
-            max={100}
-            className="field font-mono"
-          />
-        </div>
+      <div>
+        <label className="label-tag mb-1.5 block">最大工具轮数</label>
+        <input
+          type="number"
+          value={form.maxToolRounds}
+          onChange={(e) => setForm({ ...form, maxToolRounds: parseInt(e.target.value) || 5 })}
+          min={1}
+          max={20}
+          className="field font-mono"
+        />
       </div>
 
       {/* Safety controls */}
