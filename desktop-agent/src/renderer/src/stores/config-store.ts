@@ -7,7 +7,6 @@ import type { AgentConfig, SandboxMode, ApprovalPolicy } from '../agent-core/typ
 // save is immediately reflected everywhere — chat-store also reads fresh values
 // from here each turn instead of re-fetching over IPC.
 const DEFAULT_CONFIG: AgentConfig = {
-  maxToolRounds: 5,
   systemPrompt: '',
   // Personal default leans safe: writes and dangerous actions both ask first.
   sandbox: 'workspace-write',
@@ -21,7 +20,6 @@ const POLICY_VALUES = new Set(['auto', 'on-request', 'untrusted'])
 function mergeConfig(c: Record<string, any> | null | undefined): AgentConfig {
   if (!c) return { ...DEFAULT_CONFIG }
   return {
-    maxToolRounds: typeof c.maxToolRounds === 'number' ? c.maxToolRounds : DEFAULT_CONFIG.maxToolRounds,
     systemPrompt: typeof c.systemPrompt === 'string' ? c.systemPrompt : DEFAULT_CONFIG.systemPrompt,
     // Validate enums — a corrupted config.json must not let an unknown sandbox
     // mode reach the runtime safety logic.

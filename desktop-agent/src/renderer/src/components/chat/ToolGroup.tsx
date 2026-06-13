@@ -13,7 +13,7 @@ export function ToolGroup({ messages }: { messages: Message[] }): React.ReactEle
   const totalMs = messages.reduce((s, m) => s + (m.durationMs ?? 0), 0)
 
   return (
-    <div className="rise">
+    <div className="rise max-w-[85%] pl-[2.375rem]">
       <div className="rounded-xl border border-line bg-card/40 shadow-sm backdrop-blur-sm">
         <button
           type="button"

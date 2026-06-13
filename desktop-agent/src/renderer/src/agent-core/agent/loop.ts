@@ -24,6 +24,14 @@ import {
 } from './context-strategy'
 import { classify, decide, allowlistAllows, type ClassifyContext } from '../safety/classifier'
 
+/**
+ * Internal runaway guard: caps how many tool rounds a single turn may run. Not
+ * user-facing — the model ends a turn naturally when it stops calling tools;
+ * this only bounds a stuck/infinite tool-calling loop. (Mainstream agents rely
+ * on model self-termination + context budget; this is the equivalent backstop.)
+ */
+const MAX_TOOL_ROUNDS = 50
+
 /** Shape of the `done` event data emitted by AgentLoop (extends the raw provider payload). */
 export interface LoopDoneEvent extends DoneEventData {
   turnId: string
@@ -110,7 +118,7 @@ export class AgentLoop {
     this.context.add(userMsg)
     appendedSinceLastCall.push(userMsg)
 
-    for (let round = 0; round < this.agentConfig.maxToolRounds; round++) {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       // A user "stop" between rounds ends the turn gracefully (no error shown).
       if (this.signal?.aborted) return
 
@@ -283,7 +291,7 @@ export class AgentLoop {
 
     yield {
       type: 'error',
-      data: `Reached maximum tool rounds (${this.agentConfig.maxToolRounds})`
+      data: `Reached maximum tool rounds (${MAX_TOOL_ROUNDS})`
     }
   }
 

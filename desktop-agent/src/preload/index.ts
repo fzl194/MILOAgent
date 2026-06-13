@@ -13,6 +13,9 @@ const electronAPI = {
   // Projects
   listProjects: () => ipcRenderer.invoke('project:list'),
   saveProjects: (projects: unknown[]) => ipcRenderer.invoke('project:save', projects),
+  createProjectDir: (name: string) => ipcRenderer.invoke('project:createDir', name),
+  realpathProject: (p: string) => ipcRenderer.invoke('project:realpath', p),
+  projectDirExists: (p: string) => ipcRenderer.invoke('project:dirExists', p),
   // Models
   listModels: () => ipcRenderer.invoke('models:list'),
   saveModels: (models: unknown[]) => ipcRenderer.invoke('models:save', models),

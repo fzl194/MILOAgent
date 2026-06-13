@@ -169,3 +169,28 @@ describe('allowlistAllows', () => {
     expect(allowlistAllows(entries, 'read_file', { path: '/repo/a' })).toBe(false)
   })
 })
+
+describe('classify · remember-patterns (Claude-Code-style prefixes)', () => {
+  const toEntries = (patterns: string[], name: string): AllowlistEntry[] =>
+    patterns.map((pattern) => ({ pattern, name, scope: 'global', createdAt: 0 }))
+
+  it('write_file remembers by directory prefix (siblings auto-run)', () => {
+    const a = classify('write_file', { path: '/repo/sub/a.txt', content: '' }, WS)
+    const entries = toEntries(a.patterns, 'write_file')
+    expect(allowlistAllows(entries, 'write_file', { path: '/repo/sub/b.txt', content: '' })).toBe(true)
+    expect(allowlistAllows(entries, 'write_file', { path: '/repo/sub/nested/c.txt', content: '' })).toBe(true)
+    expect(allowlistAllows(entries, 'write_file', { path: '/repo/other/d.txt', content: '' })).toBe(false)
+  })
+
+  it('run_shell remembers by base command prefix', () => {
+    const m = classify('run_shell', { command: 'mkdir x' }, WS)
+    const entries = toEntries(m.patterns, 'run_shell')
+    expect(allowlistAllows(entries, 'run_shell', { command: 'mkdir y' })).toBe(true)
+    expect(allowlistAllows(entries, 'run_shell', { command: 'mkdir -p a/b' })).toBe(true)
+    expect(allowlistAllows(entries, 'run_shell', { command: 'rmdir x' })).toBe(false)
+  })
+
+  it('dangerous write_file (outside workspace) offers no remember-pattern', () => {
+    expect(classify('write_file', { path: '/etc/x', content: '' }, WS).patterns).toEqual([])
+  })
+})

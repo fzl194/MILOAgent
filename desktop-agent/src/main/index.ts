@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu, dialog } from 'electron'
 import { join } from 'path'
-import { readFile, writeFile, mkdir, unlink, readdir, access } from 'fs/promises'
+import { readFile, writeFile, mkdir, unlink, readdir, access, realpath, stat } from 'fs/promises'
 import { appendFile } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
@@ -239,6 +239,68 @@ ipcMain.handle('project:save', async (_, projects: unknown[]) => {
   catch (e: any) { return { success: false, error: e.message } }
 })
 
+// Windows reserved folder names that can't be created / cause trouble.
+const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
+
+// Create a new project folder under the workspace root and return its realpath.
+// workspaceRoot comes from config.json; if unset, defaults to ~/.desktop-agent/workspace.
+// The name is sanitized (illegal/control chars stripped, Windows-reserved names
+// rejected) and the final folder is created with a NON-recursive mkdir as an
+// atomic placeholder — concurrent same-name requests get EEXIST and roll to a
+// -2/-3 suffix instead of both "winning" the same directory.
+ipcMain.handle('project:createDir', async (_, name: string) => {
+  try {
+    const cfg = await readJson<Record<string, any>>(join(DATA_DIR(), 'config.json'), {})
+    const wsRoot =
+      cfg && typeof cfg.workspaceRoot === 'string' && cfg.workspaceRoot.trim()
+        ? cfg.workspaceRoot
+        : join(DATA_DIR(), 'workspace')
+    // Ensure + validate the workspace root (must be a real directory).
+    await mkdir(wsRoot, { recursive: true })
+    const wsReal = await realpath(wsRoot)
+    const wsStat = await stat(wsReal)
+    if (!wsStat.isDirectory()) return { success: false, error: '工作区根不是目录：' + wsRoot }
+
+    let safe =
+      String(name || '')
+        .replace(/[\x00-\x1f\\/:*?"<>|]/g, '_') // illegal + control chars
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/[.\s]+$/, '') // no trailing dots/spaces (Windows quirk)
+        .slice(0, 80)
+    if (!safe || safe === '.' || safe === '..' || WIN_RESERVED.test(safe)) safe = '项目'
+
+    // Atomic placeholder: non-recursive mkdir on the final segment; EEXIST → suffix.
+    let target = join(wsReal, safe)
+    let i = 2
+    for (;;) {
+      try {
+        await mkdir(target) // throws EEXIST if present; parent (wsReal) exists
+        break
+      } catch (e: any) {
+        if (e?.code === 'EEXIST') {
+          target = join(wsReal, `${safe}-${i++}`)
+          continue
+        }
+        throw e
+      }
+    }
+    return { success: true, data: await realpath(target) }
+  } catch (e: any) { return { success: false, error: e.message } }
+})
+
+// Canonicalize an existing directory path (resolves symlinks +, on Windows, case)
+// so two projects can't point at the "same" folder under different spellings.
+ipcMain.handle('project:realpath', async (_, p: string) => {
+  try { return { success: true, data: await realpath(p) } }
+  catch (e: any) { return { success: false, error: e.message } }
+})
+
+// Does a project's bound directory still exist on disk? (missing detection)
+ipcMain.handle('project:dirExists', async (_, p: string) => {
+  return { success: true, data: await pathExists(p) }
+})
+
 // ===== Models =====
 ipcMain.handle('models:list', async () => {
   return { success: true, data: await readJson(join(DATA_DIR(), 'models.json'), []) }
@@ -384,7 +446,7 @@ ipcMain.handle('data:clearAll', async () => {
     // Reset projects to a fresh default directly (don't rely on a later
     // migration re-running, which could race with renderer writes).
     await writeJson(PROJECTS_FILE(), canonicalizeProjects([]))
-    await writeJson(join(DATA_DIR(), 'config.json'), { systemPrompt: '', maxToolRounds: 5 })
+    await writeJson(join(DATA_DIR(), 'config.json'), { systemPrompt: '' })
     // NOTE: models.json is intentionally left untouched.
     return { success: true }
   } catch (e: any) {

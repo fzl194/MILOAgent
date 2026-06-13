@@ -175,7 +175,6 @@ export interface ToolExecutedEventData {
 
 // ===== Agent Config =====
 export interface AgentConfig {
-  maxToolRounds: number
   systemPrompt: string
   sandbox: SandboxMode
   approvalPolicy: ApprovalPolicy
@@ -293,7 +292,6 @@ export interface SessionMetaTrace {
   systemPrompt: string
   temperature?: number
   maxTokens?: number
-  maxToolRounds: number
   tools: string[]
   startedAt: number
 }

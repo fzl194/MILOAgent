@@ -130,9 +130,10 @@ function buildSafety(turnId: string, workspaceOverride?: string): AgentSafety {
             // Persist a "remember" approval to the allowlist (dangerous calls have
             // no patterns and are skipped by the classifier, so this is safe here).
             if (decision.approved && decision.remember && req.patterns.length > 0) {
-              void useAllowlistStore
+              useAllowlistStore
                 .getState()
                 .add(req.patterns, req.name, decision.scope ?? 'session')
+                .catch((e) => console.error('[approval] failed to persist remembered approval', e))
             }
             resolve({ decision, source: decision.approved ? 'user' : 'denied' })
           })
@@ -226,7 +227,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           systemPrompt: config.systemPrompt,
           temperature: modelConfig.temperature,
           maxTokens: modelConfig.maxTokens,
-          maxToolRounds: config.maxToolRounds,
           tools: ALL_TOOLS.map((t) => t.name),
           startedAt: Date.now()
         })

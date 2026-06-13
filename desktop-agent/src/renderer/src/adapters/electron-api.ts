@@ -12,6 +12,9 @@ export interface ElectronAPI {
   writeAllowlist: (entries: unknown[]) => Promise<{ success: boolean; error?: string }>
   listProjects: () => Promise<{ success: boolean; data?: Project[] }>
   saveProjects: (projects: Project[]) => Promise<{ success: boolean; error?: string }>
+  createProjectDir: (name: string) => Promise<{ success: boolean; data?: string; error?: string }>
+  realpathProject: (p: string) => Promise<{ success: boolean; data?: string; error?: string }>
+  projectDirExists: (p: string) => Promise<{ success: boolean; data?: boolean; error?: string }>
   listModels: () => Promise<{ success: boolean; data?: any[] }>
   saveModels: (models: unknown[]) => Promise<{ success: boolean; error?: string }>
   listSessions: () => Promise<{ success: boolean; data?: any[] }>

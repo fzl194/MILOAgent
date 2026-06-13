@@ -12,15 +12,29 @@ interface ProjectState {
   projects: Project[]
   activeProjectId: string | null
   isLoaded: boolean
+  /** projectId → true when its bound directory no longer exists on disk. */
+  dirMissing: Record<string, boolean>
   load: () => Promise<void>
   setActive: (id: string) => void
   create: (name: string, dirPath: string | null) => Promise<Project>
+  /** Internal core: dedup by realpath, create record, refresh missing flags. */
+  createProjectRecord: (name: string, dirPath: string) => Promise<Project>
+  /** Create a project backed by a NEW folder under the workspace root. */
+  createProjectNew: (name: string) => Promise<Project>
+  /** Create a project pointing at an EXISTING folder (raw path → realpath). */
+  createProjectFromExisting: (name: string, rawPath: string) => Promise<Project>
+  /** Re-check every project's directory existence; updates `dirMissing`. */
+  refreshDirMissing: () => Promise<void>
   rename: (id: string, name: string) => Promise<void>
   remove: (id: string) => Promise<void>
   getDefault: () => Project | undefined
   getActive: () => Project | undefined
   persist: () => Promise<void>
 }
+
+// Serialize project creation so two rapid "create" calls (double-click, etc.)
+// can't both pass the directory-uniqueness check and produce duplicate projects.
+let createChain: Promise<unknown> = Promise.resolve()
 
 function makeDefault(): Project {
   const now = Date.now()
@@ -43,13 +57,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   projects: [],
   activeProjectId: null,
   isLoaded: false,
+  dirMissing: {},
 
   load: async () => {
     const res = await window.electronAPI.listProjects()
-    let projects = canonicalize((res.data as Project[]) || [])
-    // Persist the canonicalized form if main's array was malformed (0/multi default).
+    const projects = canonicalize((res.data as Project[]) || [])
+
+    // Normalize every bound dirPath to its realpath so directory-uniqueness
+    // checks can't be spoofed by case/symlink/relative-path spellings in older
+    // or hand-edited data. Failures (dir gone) leave the path as-is; the missing
+    // flag will mark it.
+    let changed = false
+    for (const p of projects) {
+      if (!p.dirPath) continue
+      const r = await window.electronAPI.realpathProject(p.dirPath)
+      if (r.success && r.data && r.data !== p.dirPath) {
+        p.dirPath = r.data
+        changed = true
+      }
+    }
+
+    // Persist if canonicalized shape or any realpath differed from disk.
     const rawCount = (res.data as Project[] | null)?.length ?? -1
-    if (rawCount !== projects.length || JSON.stringify(res.data) !== JSON.stringify(projects)) {
+    if (changed || rawCount !== projects.length || JSON.stringify(res.data) !== JSON.stringify(projects)) {
       await window.electronAPI.saveProjects(projects)
     }
     const prevActive = get().activeProjectId
@@ -58,6 +88,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         ? prevActive
         : projects.find((p) => p.isDefault)?.id ?? projects[0]?.id ?? null
     set({ projects, activeProjectId, isLoaded: true })
+    void get().refreshDirMissing()
   },
 
   // Reject unknown ids so activeProjectId can never dangle; fall back to default.
@@ -77,6 +108,51 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set((st) => ({ projects: [...st.projects, p], activeProjectId: st.activeProjectId ?? p.id }))
     await get().persist()
     return p
+  },
+
+  // Shared core for both creation flows: enforce directory uniqueness (by
+  // realpath), then create the record and re-check directory existence. Runs
+  // under createChain so concurrent calls are serialized (no double-create).
+  createProjectRecord: (name, dirPath) => {
+    const exec = async (): Promise<Project> => {
+      if (get().projects.some((p) => p.dirPath && p.dirPath === dirPath)) {
+        throw new Error('该目录已被其他项目占用')
+      }
+      const p = await get().create(name, dirPath)
+      await get().refreshDirMissing()
+      // Switch the user into the project they just created.
+      set({ activeProjectId: p.id })
+      return p
+    }
+    const next = createChain.then(exec) as Promise<Project>
+    createChain = next.then(() => undefined, () => undefined)
+    return next
+  },
+
+  createProjectNew: async (name) => {
+    const res = await window.electronAPI.createProjectDir(name)
+    if (!res.success || !res.data) throw new Error(res.error || '创建目录失败')
+    return get().createProjectRecord(name, res.data)
+  },
+
+  createProjectFromExisting: async (name, rawPath) => {
+    const rp = await window.electronAPI.realpathProject(rawPath)
+    if (!rp.success || !rp.data) throw new Error(rp.error || '路径解析失败')
+    return get().createProjectRecord(name, rp.data)
+  },
+
+  refreshDirMissing: async () => {
+    const checks = await Promise.all(
+      get()
+        .projects.filter((p) => p.dirPath)
+        .map(async (p) => {
+          const r = await window.electronAPI.projectDirExists(p.dirPath as string)
+          return [p.id, !r.data] as const
+        })
+    )
+    const map: Record<string, boolean> = {}
+    for (const [id, missing] of checks) map[id] = missing
+    set({ dirMissing: map })
   },
 
   rename: async (id, name) => {

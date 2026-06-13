@@ -4,14 +4,16 @@ import { useModelStore } from '../../stores/model-store'
 import { useProjectStore } from '../../stores/project-store'
 import { SessionItem } from './SessionItem'
 import { NewSessionDialog } from './NewSessionDialog'
+import { NewProjectDialog } from './NewProjectDialog'
 import { AdminPanel } from '../admin/AdminPanel'
 import { useThemeStore } from '../../stores/theme-store'
 
 export function Sidebar(): React.ReactElement {
   const { sessions, activeSessionId, switchSession, createSession, deleteSession, renameSession, ensureActiveSessionInProject } = useSessionStore()
   const models = useModelStore((s) => s.models)
-  const { projects, activeProjectId, setActive } = useProjectStore()
+  const { projects, activeProjectId, setActive, dirMissing, refreshDirMissing } = useProjectStore()
   const [showNewSession, setShowNewSession] = useState(false)
+  const [showNewProject, setShowNewProject] = useState(false)
   const [adminTab, setAdminTab] = useState<string | null>(null)
   const theme = useThemeStore((s) => s.theme)
   const toggleTheme = useThemeStore((s) => s.toggle)
@@ -42,6 +44,9 @@ export function Sidebar(): React.ReactElement {
 
   const handleSelectProject = async (pid: string): Promise<void> => {
     setActive(pid)
+    // Re-check directory existence on switch so a moved/deleted folder is
+    // surfaced promptly (dirMissing is otherwise only refreshed on load/create).
+    void refreshDirMissing()
     // Keep the chat panel consistent with the selected project's sessions.
     try {
       await ensureActiveSessionInProject(pid)
@@ -79,7 +84,16 @@ export function Sidebar(): React.ReactElement {
 
         {/* Projects: switch the active project; sessions below filter to it. */}
         <div className="px-3 pb-1 pt-1">
-          <div className="px-1 pb-1 font-mono text-[9px] tracking-[0.25em] text-faint">项目</div>
+          <div className="flex items-center justify-between px-1 pb-1">
+            <div className="font-mono text-[9px] tracking-[0.25em] text-faint">项目</div>
+            <button
+              onClick={() => setShowNewProject(true)}
+              className="flex h-5 w-5 items-center justify-center rounded-md text-faint transition hover:bg-card/60 hover:text-accent"
+              title="新建项目"
+            >
+              +
+            </button>
+          </div>
           <div className="space-y-0.5">
             {orderedProjects.map((p) => {
               const active = p.id === activeProjectId
@@ -100,7 +114,11 @@ export function Sidebar(): React.ReactElement {
                   )}
                   <span className={`shrink-0 ${p.isDefault ? 'text-accent' : 'text-faint'}`}>{p.isDefault ? '◉' : '▣'}</span>
                   <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                  {!p.dirPath && !p.isDefault && <span className="shrink-0 text-[9px] text-danger" title="目录缺失">⚠</span>}
+                  {dirMissing[p.id] && (
+                    <span className="shrink-0 text-[9px] text-danger" title={`目录缺失：${p.dirPath ?? ''}`}>
+                      ⚠
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -165,6 +183,7 @@ export function Sidebar(): React.ReactElement {
       </div>
 
       {showNewSession && <NewSessionDialog onSelect={handleNewSession} onClose={() => setShowNewSession(false)} />}
+      {showNewProject && <NewProjectDialog onClose={() => setShowNewProject(false)} />}
       {adminTab && <AdminPanel tab={adminTab} onClose={() => setAdminTab(null)} />}
     </>
   )

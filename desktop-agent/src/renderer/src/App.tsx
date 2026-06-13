@@ -20,7 +20,6 @@ async function migrateConfig(): Promise<void> {
   if (c.apiKey || c.baseUrl || c.model) {
     await window.electronAPI.writeConfig({
       systemPrompt: typeof c.systemPrompt === 'string' ? c.systemPrompt : '',
-      maxToolRounds: typeof c.maxToolRounds === 'number' ? c.maxToolRounds : 5,
       sandbox: c.sandbox ?? 'workspace-write',
       approvalPolicy: c.approvalPolicy ?? 'on-request',
       workspaceRoot: typeof c.workspaceRoot === 'string' ? c.workspaceRoot : undefined

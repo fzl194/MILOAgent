@@ -45,6 +45,26 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/** Remember-pattern for write_file: the file's DIRECTORY as an anchored prefix,
+ *  so approving one write auto-runs sibling writes (Claude Code Write(dir/**)
+ *  style). Bare filenames (no directory) fall back to exact — never broaden to
+ *  the root. */
+function writeFilePattern(path: string): string {
+  const norm = normalizePath(path)
+  const slash = norm.lastIndexOf('/')
+  if (slash > 0) return '^' + escapeRegex(norm.slice(0, slash)) + '/'
+  return '^' + escapeRegex(norm) + '$'
+}
+
+/** Remember-pattern for run_shell: the BASE command (first token) as an anchored
+ *  prefix, so approving `mkdir x` auto-runs any `mkdir ...` (Claude Code
+ *  Bash(cmd:*) style). Dangerous subcommands stay gated: classify() flags them
+ *  first and decide() never auto-runs dangerous regardless of the allowlist. */
+function baseCommandPattern(cmd: string): string {
+  const base = (cmd.trim().split(/\s+/)[0] ?? '').trim()
+  return '^' + escapeRegex(base) + '(\\s|$)'
+}
+
 /** Resolve `.` and `..` segments so `D:\repo\..\outside` can't prefix-spoof the
  *  workspace check. Symlinks/short paths still can't be canonicalized in the
  *  renderer (no realpath); the main process is the right place for a hard check
@@ -141,15 +161,12 @@ export function classify(
   if (name === 'write_file') {
     const path = String(args.path ?? '')
     const outside = !isInsideWorkspace(path, ctx.workspaceRoot)
-    const pat = '^' + escapeRegex(normalizePath(path)) + '$'
     if (outside) {
-      return {
-        level: 'dangerous',
-        reason: `写入工作区根之外：${path}`,
-        patterns: [pat]
-      }
+      // Outside the workspace is dangerous — never offer a remember-pattern
+      // (consistent with dangerous run_shell: these must always ask).
+      return { level: 'dangerous', reason: `写入工作区根之外：${path}`, patterns: [] }
     }
-    return { level: 'write', reason: `写入文件：${path}`, patterns: [pat] }
+    return { level: 'write', reason: `写入文件：${path}`, patterns: [writeFilePattern(path)] }
   }
 
   if (name === 'run_shell') {
@@ -164,7 +181,7 @@ export function classify(
     }
     for (const re of NETWORK) {
       if (re.test(cmd)) {
-        return { level: 'network', reason: '涉及网络操作', patterns: ['^' + escapeRegex(cmd.trim()) + '$'] }
+        return { level: 'network', reason: '涉及网络操作', patterns: [baseCommandPattern(cmd)] }
       }
     }
     for (const re of SAFE_READ) {
@@ -177,7 +194,7 @@ export function classify(
     return {
       level: 'write',
       reason: '可能修改系统状态的命令',
-      patterns: ['^' + escapeRegex(cmd.trim()) + '$']
+      patterns: [baseCommandPattern(cmd)]
     }
   }
 

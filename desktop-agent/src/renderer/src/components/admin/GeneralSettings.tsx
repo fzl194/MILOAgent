@@ -4,7 +4,6 @@ import type { SandboxMode, ApprovalPolicy } from '../../agent-core/types'
 
 interface FormState {
   systemPrompt: string
-  maxToolRounds: number
   sandbox: SandboxMode
   approvalPolicy: ApprovalPolicy
   workspaceRoot: string
@@ -28,7 +27,6 @@ export function GeneralSettings(): React.ReactElement {
   const load = useConfigStore((s) => s.load)
   const [form, setForm] = useState<FormState>({
     systemPrompt: '',
-    maxToolRounds: 5,
     sandbox: 'workspace-write',
     approvalPolicy: 'on-request',
     workspaceRoot: ''
@@ -46,7 +44,6 @@ export function GeneralSettings(): React.ReactElement {
   useEffect(() => {
     setForm({
       systemPrompt: config.systemPrompt,
-      maxToolRounds: config.maxToolRounds,
       sandbox: config.sandbox,
       approvalPolicy: config.approvalPolicy,
       workspaceRoot: config.workspaceRoot ?? ''
@@ -56,7 +53,6 @@ export function GeneralSettings(): React.ReactElement {
   const handleSave = async (): Promise<void> => {
     await save({
       systemPrompt: form.systemPrompt,
-      maxToolRounds: form.maxToolRounds,
       sandbox: form.sandbox,
       approvalPolicy: form.approvalPolicy,
       workspaceRoot: form.workspaceRoot.trim() || undefined
@@ -97,17 +93,6 @@ export function GeneralSettings(): React.ReactElement {
           rows={4}
           placeholder="自定义 Agent 的行为与角色…"
           className="field resize-none font-sans leading-relaxed"
-        />
-      </div>
-      <div>
-        <label className="label-tag mb-1.5 block">最大工具轮数</label>
-        <input
-          type="number"
-          value={form.maxToolRounds}
-          onChange={(e) => setForm({ ...form, maxToolRounds: parseInt(e.target.value) || 5 })}
-          min={1}
-          max={20}
-          className="field font-mono"
         />
       </div>
 
@@ -166,6 +151,7 @@ export function GeneralSettings(): React.ReactElement {
           </div>
           <div className="mt-1 font-mono text-[10px] text-faint">
             文件写入限制在此目录内；Shell 仍由审批控制（个人版无内核沙箱）。
+            留空时「新建项目」会在默认 <span className="text-muted">~/.desktop-agent/workspace</span> 下创建新文件夹。
           </div>
         </div>
       </div>

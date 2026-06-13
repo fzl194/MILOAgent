@@ -131,7 +131,7 @@ export function MessageList({ messages, currentText, isStreaming, activeToolCall
         })()}
 
         {activeToolCalls.length > 0 && (
-          <div className="rise">
+          <div className="rise max-w-[85%] pl-[2.375rem]">
             <div className="glass flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs">
               <span className="inline-block animate-spin">⚙️</span>
               <span className="min-w-0 flex-1 truncate font-mono text-muted">
