@@ -304,8 +304,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           modelConfigId: modelConfig.id,
           model: modelConfig.model,
           systemPrompt: turnConfig.systemPrompt,
-          temperature: modelConfig.temperature,
-          maxTokens: modelConfig.maxTokens,
           tools: ALL_TOOLS.map((t) => t.name),
           startedAt: Date.now()
         })
@@ -338,7 +336,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     executor.setCwd(projDir)
 
     const loop = new AgentLoop(
-      { apiKey: modelConfig.apiKey, baseUrl: modelConfig.baseUrl, model: modelConfig.model, temperature: modelConfig.temperature, maxTokens: modelConfig.maxTokens },
+      { apiKey: modelConfig.apiKey, baseUrl: modelConfig.baseUrl, model: modelConfig.model },
       executor,
       turnConfig,
       history,
@@ -467,8 +465,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               round: d.round,
               modelConfigId: modelConfig.id,
               model: modelConfig.model,
-              temperature: modelConfig.temperature,
-              maxTokens: modelConfig.maxTokens,
               tools: ALL_TOOLS.map((t) => t.name),
               appendedMessages: d.appendedMessages.map((m) => ({
                 msgId: m.id,

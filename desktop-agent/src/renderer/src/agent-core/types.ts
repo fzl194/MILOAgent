@@ -204,8 +204,6 @@ export interface ModelConfig {
   apiKey: string
   baseUrl: string
   model: string
-  temperature?: number
-  maxTokens?: number
   isDefault?: boolean
   /** The model's context window in tokens, for context-budget enforcement.
    *  Optional: when absent, a conservative default is used. Editing models.json

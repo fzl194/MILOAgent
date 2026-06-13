@@ -52,6 +52,23 @@ function canonicalizeProjects(input: unknown): Record<string, unknown>[] {
   return out
 }
 
+// Build the default project with a REAL working directory (<wsRoot>/default),
+// creating the folder if needed. Shared by the one-time migration and
+// data:clearAll so both leave the default project pointing at an existing dir
+// (P4: the default project is never dirless).
+async function buildDefaultProject(): Promise<Record<string, unknown>> {
+  const cfg = await readJson<Record<string, any>>(join(DATA_DIR(), 'config.json'), {})
+  const wsRoot =
+    cfg && typeof cfg.workspaceRoot === 'string' && cfg.workspaceRoot.trim()
+      ? cfg.workspaceRoot
+      : join(DATA_DIR(), 'workspace')
+  await mkdir(wsRoot, { recursive: true })
+  const dir = join(wsRoot, 'default')
+  await mkdir(dir, { recursive: true })
+  const now = Date.now()
+  return { id: randomUUID(), name: '默认项目', dirPath: await realpath(dir), isDefault: true, createdAt: now, updatedAt: now }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200, height: 800, minWidth: 800, minHeight: 600, show: false,
@@ -99,27 +116,8 @@ function runMigrationOnce(): Promise<void> {
       await unlink(join(DATA_DIR(), 'index.json')).catch(() => undefined)
       // Clear the legacy global allowlist (P4: permissions are now session/project rules).
       await unlink(join(DATA_DIR(), 'allowlist.json')).catch(() => undefined)
-      // The default project gets a real working directory under the workspace root
-      // (not null), so the agent works somewhere concrete even without a custom project.
-      const cfg = await readJson<Record<string, any>>(join(DATA_DIR(), 'config.json'), {})
-      const wsRoot =
-        cfg && typeof cfg.workspaceRoot === 'string' && cfg.workspaceRoot.trim()
-          ? cfg.workspaceRoot
-          : join(DATA_DIR(), 'workspace')
-      const defaultDir = join(wsRoot, 'default')
-      await mkdir(defaultDir, { recursive: true })
-      const defaultReal = await realpath(defaultDir)
-      const now = Date.now()
-      const defaultProject = {
-        id: randomUUID(),
-        name: '默认项目',
-        dirPath: defaultReal,
-        isDefault: true,
-        createdAt: now,
-        updatedAt: now
-      }
-      // Commit marker written last.
-      await writeJson(PROJECTS_FILE(), [defaultProject])
+      // Seed the default project with a real working directory; commit marker last.
+      await writeJson(PROJECTS_FILE(), [await buildDefaultProject()])
     })().catch((e) => {
       migratePromise = null // allow a retry on failure
       throw e
@@ -512,14 +510,22 @@ ipcMain.handle('stats:pruneBySession', async (_, sid: string) => {
 ipcMain.handle('data:clearAll', async () => {
   try {
     await ensureDirs()
+    // sessions/ holds BOTH <sid>.json messages and <sid>.rules.json permission
+    // rules — clearing the directory wipes both. traces + stats go too.
     await clearFlatFiles(SESSIONS_DIR())
     await clearFlatFiles(TRACES_DIR())
     await writeFile(join(STATS_DIR(), 'events.jsonl'), '', 'utf-8')
     await writeJson(join(DATA_DIR(), 'index.json'), [])
-    // Reset projects to a fresh default directly (don't rely on a later
-    // migration re-running, which could race with renderer writes).
-    await writeJson(PROJECTS_FILE(), canonicalizeProjects([]))
-    await writeJson(join(DATA_DIR(), 'config.json'), { systemPrompt: '' })
+    await unlink(join(DATA_DIR(), 'allowlist.json')).catch(() => undefined) // vestigial
+    // Reset projects to a fresh default WITH a real working dir, and restore a
+    // complete global AgentConfig (sandbox/policy are the project-fallback defaults).
+    await writeJson(PROJECTS_FILE(), [await buildDefaultProject()])
+    await writeJson(join(DATA_DIR(), 'config.json'), {
+      systemPrompt: '',
+      workspaceRoot: undefined,
+      sandbox: 'workspace-write',
+      approvalPolicy: 'on-request'
+    })
     // NOTE: models.json is intentionally left untouched.
     return { success: true }
   } catch (e: any) {
