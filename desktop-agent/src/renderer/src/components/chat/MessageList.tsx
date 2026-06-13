@@ -4,6 +4,7 @@ import { MessageBubble } from './MessageBubble'
 import { StreamingIndicator } from './StreamingIndicator'
 import { ApprovalCard } from './ApprovalCard'
 import { ToolGroup } from './ToolGroup'
+import { Markdown } from './Markdown'
 
 interface MessageListProps {
   messages: Message[]
@@ -59,7 +60,7 @@ export function MessageList({ messages, currentText, isStreaming, activeToolCall
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto overscroll-contain">
-      <div className="mx-auto max-w-3xl space-y-4 p-4">
+      <div className="mx-auto max-w-3xl space-y-4 p-4 lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl">
         {messages.length === 0 && !isStreaming && <Hero />}
 
         {(() => {
@@ -91,7 +92,7 @@ export function MessageList({ messages, currentText, isStreaming, activeToolCall
         })()}
 
         {activeToolCalls.length > 0 && (
-          <div className="mx-auto max-w-3xl rise">
+          <div className="rise">
             <div className="glass flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs">
               <span className="inline-block animate-spin">⚙️</span>
               <span className="min-w-0 flex-1 truncate font-mono text-muted">
@@ -118,8 +119,8 @@ export function MessageList({ messages, currentText, isStreaming, activeToolCall
               </div>
               <div className="min-w-0">
                 <div className="label-tag mb-1">MILO</div>
-                <div className="whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-line/70 bg-panel/60 px-4 py-3 text-sm leading-relaxed text-fg shadow-lg backdrop-blur-sm">
-                  {currentText}
+                <div className="md-body rounded-2xl rounded-tl-sm border border-line/70 bg-panel/60 px-4 py-3 shadow-lg backdrop-blur-sm">
+                  <Markdown>{currentText}</Markdown>
                   <span className="cursor-blink text-accent">▍</span>
                 </div>
               </div>

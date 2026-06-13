@@ -1,49 +1,6 @@
-import { useRef, useState } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
 import type { Message } from '../../agent-core/types'
 import { ToolInvocationCard } from './ToolInvocationCard'
-
-function CodeBlock({ children }: { children?: React.ReactNode }): React.ReactElement {
-  const ref = useRef<HTMLPreElement>(null)
-  const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
-
-  const copy = async (): Promise<void> => {
-    const text = ref.current?.innerText ?? ''
-    try {
-      await navigator.clipboard.writeText(text)
-      setStatus('copied')
-    } catch {
-      setStatus('failed')
-    }
-    window.setTimeout(() => setStatus('idle'), 1200)
-  }
-
-  return (
-    <div className="group relative my-2.5">
-      <button
-        type="button"
-        onClick={copy}
-        className="absolute right-2 top-2 z-10 rounded-md border border-line bg-card/80 px-2 py-0.5 font-mono text-[10px] text-muted opacity-0 transition hover:text-fg group-hover:opacity-100"
-      >
-        {status === 'copied' ? '已复制' : status === 'failed' ? '失败' : '复制'}
-      </button>
-      <pre
-        ref={ref}
-        className="overflow-x-auto rounded-xl border border-line bg-term-bg p-3.5 text-xs leading-relaxed shadow-lg"
-      >
-        {children}
-      </pre>
-    </div>
-  )
-}
-
-const components: Components = {
-  pre({ children }) {
-    return <CodeBlock>{children}</CodeBlock>
-  }
-}
+import { Markdown } from './Markdown'
 
 interface Props {
   message: Message
@@ -98,15 +55,7 @@ export function MessageBubble({ message }: Props): React.ReactNode {
           <div className="min-w-0">
             <div className="label-tag mb-1">MILO</div>
             <div className="md-body rounded-2xl rounded-tl-sm border border-line/70 bg-panel/60 px-4 py-3 shadow-lg backdrop-blur-sm">
-              {message.content && (
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[rehypeHighlight]}
-                  components={components}
-                >
-                  {message.content}
-                </ReactMarkdown>
-              )}
+              {message.content && <Markdown>{message.content}</Markdown>}
               {message.toolCalls && message.toolCalls.length > 0 && (
                 <div className={`flex flex-wrap gap-1.5 ${message.content ? 'mt-2' : ''}`}>
                   {message.toolCalls.map((tc) => (

@@ -35,7 +35,7 @@ export function ChatInput({ onSend, onStop, disabled }: ChatInputProps): React.R
 
   return (
     <div className="relative z-10 px-4 pb-4 pt-1">
-      <div className="glass-strong mx-auto flex max-w-3xl items-end gap-2 rounded-2xl p-2 transition focus-within:border-accent/40">
+      <div className="glass-strong mx-auto flex max-w-3xl items-end gap-2 rounded-2xl p-2 transition focus-within:border-accent/40 lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl">
         <textarea
           ref={textareaRef}
           value={text}

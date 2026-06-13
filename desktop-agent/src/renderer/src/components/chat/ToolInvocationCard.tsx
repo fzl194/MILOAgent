@@ -69,7 +69,7 @@ export function ToolInvocationCard({ message }: { message: Message }): React.Rea
   // Legacy tool messages (no toolName metadata) → compact toggle.
   if (!name) {
     return (
-      <div className="mx-auto max-w-3xl rise">
+      <div className="rise">
         <div className="glass rounded-xl">
           <button
             type="button"
@@ -156,7 +156,7 @@ export function ToolInvocationCard({ message }: { message: Message }): React.Rea
   }
 
   return (
-    <div className="mx-auto max-w-3xl rise">
+    <div className="rise">
       <div
         className="rounded-xl border bg-card/60 shadow-md backdrop-blur-sm"
         style={{ borderColor: `color-mix(in srgb, ${headerTone} 35%, transparent)` }}
