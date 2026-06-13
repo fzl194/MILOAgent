@@ -15,6 +15,7 @@ export interface ElectronAPI {
   createProjectDir: (name: string) => Promise<{ success: boolean; data?: string; error?: string }>
   realpathProject: (p: string) => Promise<{ success: boolean; data?: string; error?: string }>
   projectDirExists: (p: string) => Promise<{ success: boolean; data?: boolean; error?: string }>
+  ensureDefaultProjectDir: () => Promise<{ success: boolean; data?: string; error?: string }>
   listModels: () => Promise<{ success: boolean; data?: any[] }>
   saveModels: (models: unknown[]) => Promise<{ success: boolean; error?: string }>
   listSessions: () => Promise<{ success: boolean; data?: any[] }>
@@ -29,6 +30,9 @@ export interface ElectronAPI {
   appendTrace: (sid: string, event: object) => Promise<{ success: boolean; error?: string }>
   readTrace: (sid: string) => Promise<{ success: boolean; data?: any[] }>
   deleteTrace: (sid: string) => Promise<{ success: boolean }>
+  readSessionRules: (sid: string) => Promise<{ success: boolean; data?: any[] }>
+  writeSessionRules: (sid: string, rules: unknown) => Promise<{ success: boolean; error?: string }>
+  deleteSessionRules: (sid: string) => Promise<{ success: boolean }>
   clearAllData: () => Promise<{ success: boolean; error?: string }>
 }
 

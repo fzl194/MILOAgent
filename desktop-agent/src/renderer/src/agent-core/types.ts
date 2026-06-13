@@ -104,8 +104,8 @@ export interface ApprovalRequest {
 
 export interface ApprovalDecision {
   approved: boolean
-  remember?: boolean // add `patterns` to the allowlist
-  scope?: 'global' | 'session' // where to persist a remembered approval
+  remember?: boolean // add an allow rule (session or project scope)
+  scope?: 'session' | 'project' // where to persist a remembered approval
   reason?: string // free text when denied
 }
 
@@ -230,15 +230,23 @@ export interface Session {
 // (dirPath). The directory path (realpath) is the project's logical identity
 // (mirroring Codex/Claude "project = cwd"). The Default Project has dirPath =
 // null — users can chat without creating a project.
+/** One unified permission rule. Replaces the old split (allowlist +
+ *  commandRules). `pattern` is a regex source matched against the call's subject
+ *  (shell command, or resolved file path). Scopes (session > project) are
+ *  merged and evaluated deny > ask > allow, first match wins. */
+export interface PermissionRule {
+  pattern: string
+  action: 'allow' | 'deny'
+  tool?: string // 'run_shell' | 'write_file' | '*' (omitted = any tool)
+}
+
 export interface ProjectConfig {
   systemPrompt?: string // project-level system prompt (stacked atop global) — = project memory
   sandbox?: SandboxMode
   approvalPolicy?: ApprovalPolicy
   defaultModelId?: string
-  /** Per-project shell command rules (regex sources, run_shell only).
-   *  deny → hard block; allow → auto-run (except intrinsically dangerous).
-   *  Mirrors Codex's deny > ask > allow precedence. */
-  commandRules?: { allow?: string[]; deny?: string[] }
+  /** Project-scope permission rules (session rules are evaluated first). */
+  rules?: PermissionRule[]
 }
 
 export interface Project {

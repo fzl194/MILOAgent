@@ -56,8 +56,8 @@ export function ProjectSettingsDialog({
   const [sandbox, setSandbox] = useState<SandboxMode | '__inherit__'>(cfg.sandbox ?? '__inherit__')
   const [policy, setPolicy] = useState<ApprovalPolicy | '__inherit__'>(cfg.approvalPolicy ?? '__inherit__')
   const [defaultModelId, setDefaultModelId] = useState(cfg.defaultModelId ?? '')
-  const [allow, setAllow] = useState((cfg.commandRules?.allow ?? []).join('\n'))
-  const [deny, setDeny] = useState((cfg.commandRules?.deny ?? []).join('\n'))
+  const [allow, setAllow] = useState((cfg.rules?.filter((r) => r.action === 'allow').map((r) => r.pattern) ?? []).join('\n'))
+  const [deny, setDeny] = useState((cfg.rules?.filter((r) => r.action === 'deny').map((r) => r.pattern) ?? []).join('\n'))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
@@ -83,13 +83,16 @@ export function ProjectSettingsDialog({
       if (!project.isDefault && dirPath.trim() && dirPath.trim() !== project.dirPath) {
         await updateDir(project.id, dirPath.trim())
       }
+      const rules = [
+        ...allowList.map((p) => ({ pattern: p, action: 'allow' as const, tool: 'run_shell' })),
+        ...denyList.map((p) => ({ pattern: p, action: 'deny' as const, tool: 'run_shell' }))
+      ]
       await updateConfig(project.id, {
         systemPrompt: systemPrompt.trim() || undefined,
         sandbox: sandbox === '__inherit__' ? undefined : sandbox,
         approvalPolicy: policy === '__inherit__' ? undefined : policy,
         defaultModelId: defaultModelId || undefined,
-        commandRules:
-          allowList.length || denyList.length ? { allow: allowList, deny: denyList } : undefined
+        rules: rules.length ? rules : undefined
       })
       onClose()
     } catch (e: any) {

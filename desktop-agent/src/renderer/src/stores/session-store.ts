@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { Session, Message } from '../agent-core/types'
 import { useStatsStore } from './stats-store'
 import { useProjectStore } from './project-store'
+import { usePermissionStore } from './permission-store'
 
 interface SessionState {
   sessions: Session[]
@@ -59,6 +60,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((st) => ({ sessions: [s, ...st.sessions], activeSessionId: s.id, currentMessages: [] }))
     await get().persistIndex()
     await window.electronAPI.writeSessionMessages(s.id, [])
+    void usePermissionStore.getState().loadForSession(s.id)
     return s
   },
 
@@ -67,6 +69,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (prev) await get().saveCurrentMessages()
     const res = await window.electronAPI.readSessionMessages(id)
     set({ activeSessionId: id, currentMessages: (res.data as Message[]) || [] })
+    void usePermissionStore.getState().loadForSession(id)
   },
 
   deleteSession: async (id) => {
@@ -75,6 +78,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const projectOfDeleted = deleted?.projectId
     await window.electronAPI.deleteSessionMessages(id)
     await window.electronAPI.deleteTrace(id)
+    await window.electronAPI.deleteSessionRules(id)
     await window.electronAPI.pruneStatsBySession(id)
 
     const remaining = get().sessions.filter((s) => s.id !== id)

@@ -56,16 +56,16 @@ export function ApprovalCard(): React.ReactElement | null {
                     <button
                       onClick={() => resolve(req.reqId, { approved: true, remember: true, scope: 'session' })}
                       className="rounded-lg border border-line bg-base/60 px-3 py-1.5 text-xs text-muted transition hover:border-accent/50 hover:text-fg"
-                      title="本次会话内同类自动批准，重启失效"
+                      title="本会话内同类自动放行（持久化，重启保留）"
                     >
-                      批准·记住(本次)
+                      批准·记住(会话)
                     </button>
                     <button
-                      onClick={() => resolve(req.reqId, { approved: true, remember: true, scope: 'global' })}
+                      onClick={() => resolve(req.reqId, { approved: true, remember: true, scope: 'project' })}
                       className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs text-accent transition hover:bg-accent/20"
-                      title="永久记住，今后同类自动批准"
+                      title="本项目内同类自动放行（对该项目所有会话生效）"
                     >
-                      批准·记住(永久)
+                      批准·记住(项目)
                     </button>
                   </>
                 )}

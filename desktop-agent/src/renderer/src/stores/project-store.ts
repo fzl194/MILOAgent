@@ -81,6 +81,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }
     }
 
+    // Backfill the default project's working directory for installs that predate
+    // P4 (dirPath was null). The one-time migration can't fix an already-present
+    // projects.json, so do it here on every load — idempotent on the main side.
+    const def = projects.find((p) => p.isDefault)
+    if (def && !def.dirPath) {
+      const r = await window.electronAPI.ensureDefaultProjectDir()
+      if (r.success && r.data) {
+        def.dirPath = r.data
+        changed = true
+      }
+    }
+
     // Persist if canonicalized shape or any realpath differed from disk.
     const rawCount = (res.data as Project[] | null)?.length ?? -1
     if (changed || rawCount !== projects.length || JSON.stringify(res.data) !== JSON.stringify(projects)) {

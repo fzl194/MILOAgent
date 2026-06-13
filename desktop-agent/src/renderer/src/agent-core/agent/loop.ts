@@ -22,7 +22,7 @@ import {
   DefaultContextStrategy,
   DEFAULT_CONTEXT_WINDOW
 } from './context-strategy'
-import { classify, decide, allowlistAllows, type ClassifyContext } from '../safety/classifier'
+import { classify, decide, type ClassifyContext } from '../safety/classifier'
 
 /**
  * Internal runaway guard: caps how many tool rounds a single turn may run. Not
@@ -334,9 +334,15 @@ export class AgentLoop {
     if (this.signal?.aborted) return { action: 'deny', deniedMessage: '用户已停止' }
 
     const assessment = classify(name, args, this.safety.ctx)
-    const allowlisted = this.allowlisted(name, args)
-    const command = name === 'run_shell' ? String(args.command ?? '') : undefined
-    const decision = decide(assessment, name, this.safety.ctx, this.safety.policy, allowlisted, command)
+    // Subject for permission-rule matching: the shell command, or the (already
+    // resolved-to-absolute) write_file path. read_file has no rule subject.
+    const subject =
+      name === 'run_shell'
+        ? String(args.command ?? '')
+        : name === 'write_file'
+          ? String(args.path ?? '')
+          : undefined
+    const decision = decide(assessment, name, this.safety.ctx, this.safety.policy, subject)
 
     if (decision.action === 'deny') {
       return { action: 'deny', riskLevel: assessment.level, deniedMessage: decision.reason }
@@ -345,7 +351,8 @@ export class AgentLoop {
       return {
         action: 'auto',
         riskLevel: assessment.level,
-        approvedBy: allowlisted && assessment.level !== 'dangerous' ? 'allowlist' : 'auto'
+        // 'rule' when an allow rule drove the auto-run (reason mentions 规则), else 'auto'.
+        approvedBy: decision.reason.includes('规则') ? 'allowlist' : 'auto'
       }
     }
 
@@ -366,10 +373,5 @@ export class AgentLoop {
       return { action: 'deny', riskLevel: assessment.level, approvedBy: 'denied', deniedMessage: `用户拒绝${why}` }
     }
     return { action: 'auto', riskLevel: assessment.level, approvedBy: source }
-  }
-
-  private allowlisted(name: string, args: Record<string, unknown>): boolean {
-    if (!this.safety) return false
-    return allowlistAllows(this.safety.getAllowlist(), name, args)
   }
 }

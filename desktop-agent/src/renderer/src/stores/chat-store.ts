@@ -21,6 +21,7 @@ import { useStatsStore } from './stats-store'
 import { useConfigStore } from './config-store'
 import { useAllowlistStore } from './allowlist-store'
 import { useProjectStore } from './project-store'
+import { usePermissionStore } from './permission-store'
 import { ALL_TOOLS } from '../agent-core/tools/definitions'
 
 function estimateTokens(text: string): number {
@@ -153,7 +154,8 @@ function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): 
       sandbox: pcfg?.sandbox ?? cfg.sandbox,
       workspaceRoot: workspaceOverride ?? cfg.workspaceRoot,
       cwd,
-      commandRules: pcfg?.commandRules
+      // Unified rules: session scope first, then project scope.
+      rules: usePermissionStore.getState().merged(pcfg?.rules)
     },
     policy: pcfg?.approvalPolicy ?? cfg.approvalPolicy,
     getAllowlist: () => useAllowlistStore.getState().all(),
@@ -161,13 +163,35 @@ function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): 
       request: (req: ApprovalRequest) =>
         new Promise<{ decision: ApprovalDecision; source: ApprovalSource }>((resolve) => {
           approvalResolvers.set(req.reqId, (decision) => {
-            // Persist a "remember" approval to the allowlist (dangerous calls have
-            // no patterns and are skipped by the classifier, so this is safe here).
+            // Persist a "remember" approval as a unified allow rule, to the chosen
+            // scope (session or project). Dangerous calls have no patterns and are
+            // skipped by the classifier, so they can never be remembered.
             if (decision.approved && decision.remember && req.patterns.length > 0) {
-              useAllowlistStore
-                .getState()
-                .add(req.patterns, req.name, decision.scope ?? 'session')
-                .catch((e) => console.error('[approval] failed to persist remembered approval', e))
+              const newRules = req.patterns.map((p) => ({ pattern: p, action: 'allow' as const, tool: req.name }))
+              if (decision.scope === 'project') {
+                const proj = useProjectStore.getState().getActive()
+                if (proj) {
+                  const existing = proj.config?.rules ?? []
+                  const mergedRules = [
+                    ...existing,
+                    ...newRules.filter(
+                      (r) =>
+                        !existing.some(
+                          (e) => e.pattern === r.pattern && e.action === r.action && e.tool === r.tool
+                        )
+                    )
+                  ]
+                  useProjectStore
+                    .getState()
+                    .updateConfig(proj.id, { rules: mergedRules })
+                    .catch((e) => console.error('[approval] failed to persist project rule', e))
+                }
+              } else {
+                usePermissionStore
+                  .getState()
+                  .addSessionRules(newRules)
+                  .catch((e) => console.error('[approval] failed to persist session rule', e))
+              }
             }
             resolve({ decision, source: decision.approved ? 'user' : 'denied' })
           })

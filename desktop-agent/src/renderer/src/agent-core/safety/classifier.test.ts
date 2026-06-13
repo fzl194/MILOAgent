@@ -117,38 +117,67 @@ describe('isInsideWorkspace — H2 dotdot bypass regression', () => {
   })
 })
 
-describe('decide — sandbox × policy × allowlist', () => {
+describe('decide — sandbox × policy × rules', () => {
   const ro = { sandbox: 'read-only' as const, workspaceRoot: '/repo' }
   const ww = { sandbox: 'workspace-write' as const, workspaceRoot: '/repo' }
 
   it('read-only only permits read_file', () => {
-    expect(decide(classify('read_file', { path: '/repo/a' }, ro), 'read_file', ro, 'on-request', false).action).toBe('auto')
+    expect(decide(classify('read_file', { path: '/repo/a' }, ro), 'read_file', ro, 'on-request', '/repo/a').action).toBe('auto')
     // Even a "safe" shell read is blocked under read-only.
-    expect(decide(classify('run_shell', { command: 'ls' }, ro), 'run_shell', ro, 'on-request', false).action).toBe('deny')
-    expect(decide(classify('write_file', { path: '/repo/a', content: '' }, ro), 'write_file', ro, 'on-request', false).action).toBe('deny')
+    expect(decide(classify('run_shell', { command: 'ls' }, ro), 'run_shell', ro, 'on-request', 'ls').action).toBe('deny')
+    expect(decide(classify('write_file', { path: '/repo/a', content: '' }, ro), 'write_file', ro, 'on-request', '/repo/a').action).toBe('deny')
   })
 
   it('write level depends on policy', () => {
     const w = classify('run_shell', { command: 'mkdir x' }, ww)
-    expect(decide(w, 'run_shell', ww, 'auto', false).action).toBe('auto')
-    expect(decide(w, 'run_shell', ww, 'on-request', false).action).toBe('ask')
-    expect(decide(w, 'run_shell', ww, 'untrusted', false).action).toBe('ask')
+    expect(decide(w, 'run_shell', ww, 'auto', 'mkdir x').action).toBe('auto')
+    expect(decide(w, 'run_shell', ww, 'on-request', 'mkdir x').action).toBe('ask')
+    expect(decide(w, 'run_shell', ww, 'untrusted', 'mkdir x').action).toBe('ask')
   })
 
-  it('dangerous always asks, even with allowlist hit', () => {
+  it('dangerous always asks, even with an allow rule', () => {
     const d = classify('run_shell', { command: 'rm -rf x' }, ww)
-    expect(decide(d, 'run_shell', ww, 'auto', true).action).toBe('ask') // allowlist ignored for dangerous
-    expect(decide(d, 'run_shell', ww, 'on-request', false).action).toBe('ask')
+    const ctxAllow = { ...ww, rules: [{ pattern: '^rm', action: 'allow' as const, tool: 'run_shell' }] }
+    expect(decide(d, 'run_shell', ctxAllow, 'auto', 'rm -rf x').action).toBe('ask') // dangerous floor
+    expect(decide(d, 'run_shell', ww, 'on-request', 'rm -rf x').action).toBe('ask')
   })
 
   it('network always asks', () => {
     const n = classify('run_shell', { command: 'curl http://x' }, ww)
-    expect(decide(n, 'run_shell', ww, 'auto', false).action).toBe('ask')
+    expect(decide(n, 'run_shell', ww, 'auto', 'curl http://x').action).toBe('ask')
   })
 
-  it('allowlist auto-runs a remembered write', () => {
-    const w = classify('run_shell', { command: 'mkdir x' }, ww)
-    expect(decide(w, 'run_shell', ww, 'on-request', true).action).toBe('auto')
+  it('an allow rule (session/project) auto-runs a remembered write', () => {
+    const ctxRule = { ...ww, rules: [{ pattern: '^mkdir x$', action: 'allow' as const, tool: 'run_shell' }] }
+    const w = classify('run_shell', { command: 'mkdir x' }, ctxRule)
+    expect(decide(w, 'run_shell', ctxRule, 'on-request', 'mkdir x').action).toBe('auto')
+  })
+
+  it('deny beats allow regardless of order (true deny > allow)', () => {
+    // allow listed BEFORE deny, same subject → deny must still win.
+    const ctx = {
+      ...ww,
+      rules: [
+        { pattern: '^mkdir', action: 'allow' as const, tool: 'run_shell' },
+        { pattern: '^mkdir', action: 'deny' as const, tool: 'run_shell' }
+      ]
+    }
+    const w = classify('run_shell', { command: 'mkdir x' }, ctx)
+    expect(decide(w, 'run_shell', ctx, 'auto', 'mkdir x').action).toBe('deny')
+  })
+
+  it('a high-risk base command is never auto-run by an allow rule', () => {
+    const ctx = { ...ww, rules: [{ pattern: '^rm', action: 'allow' as const, tool: 'run_shell' }] }
+    // `rm somefile` (no -rf) classifies as write; under on-request an allow rule
+    // would auto-run it, but rm is a high-risk base command so it must still ask.
+    const w = classify('run_shell', { command: 'rm somefile' }, ctx)
+    expect(decide(w, 'run_shell', ctx, 'on-request', 'rm somefile').action).toBe('ask')
+  })
+
+  it('a deny rule hard-blocks (even what would otherwise be allowed)', () => {
+    const ctxDeny = { ...ww, rules: [{ pattern: '^rm', action: 'deny' as const }] }
+    const d = classify('run_shell', { command: 'rm -rf x' }, ctxDeny)
+    expect(decide(d, 'run_shell', ctxDeny, 'auto', 'rm -rf x').action).toBe('deny')
   })
 })
 

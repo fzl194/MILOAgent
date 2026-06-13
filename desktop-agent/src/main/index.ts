@@ -97,8 +97,29 @@ function runMigrationOnce(): Promise<void> {
       await clearFlatFiles(TRACES_DIR())
       await writeFile(join(STATS_DIR(), 'events.jsonl'), '', 'utf-8').catch(() => undefined)
       await unlink(join(DATA_DIR(), 'index.json')).catch(() => undefined)
+      // Clear the legacy global allowlist (P4: permissions are now session/project rules).
+      await unlink(join(DATA_DIR(), 'allowlist.json')).catch(() => undefined)
+      // The default project gets a real working directory under the workspace root
+      // (not null), so the agent works somewhere concrete even without a custom project.
+      const cfg = await readJson<Record<string, any>>(join(DATA_DIR(), 'config.json'), {})
+      const wsRoot =
+        cfg && typeof cfg.workspaceRoot === 'string' && cfg.workspaceRoot.trim()
+          ? cfg.workspaceRoot
+          : join(DATA_DIR(), 'workspace')
+      const defaultDir = join(wsRoot, 'default')
+      await mkdir(defaultDir, { recursive: true })
+      const defaultReal = await realpath(defaultDir)
+      const now = Date.now()
+      const defaultProject = {
+        id: randomUUID(),
+        name: '默认项目',
+        dirPath: defaultReal,
+        isDefault: true,
+        createdAt: now,
+        updatedAt: now
+      }
       // Commit marker written last.
-      await writeJson(PROJECTS_FILE(), canonicalizeProjects([]))
+      await writeJson(PROJECTS_FILE(), [defaultProject])
     })().catch((e) => {
       migratePromise = null // allow a retry on failure
       throw e
@@ -318,6 +339,39 @@ ipcMain.handle('project:realpath', async (_, p: string) => {
 // Does a project's bound directory still exist on disk? (missing detection)
 ipcMain.handle('project:dirExists', async (_, p: string) => {
   return { success: true, data: await pathExists(p) }
+})
+
+// Ensure the default project has a real working directory (<wsRoot>/default),
+// creating it if needed. Idempotent. Used for EXISTING installs whose default
+// project predates P4 (dirPath=null) — the one-time migration only fires when
+// projects.json is absent, so it can't fix an already-present default project.
+ipcMain.handle('project:ensureDefaultDir', async () => {
+  try {
+    const cfg = await readJson<Record<string, any>>(join(DATA_DIR(), 'config.json'), {})
+    const wsRoot =
+      cfg && typeof cfg.workspaceRoot === 'string' && cfg.workspaceRoot.trim()
+        ? cfg.workspaceRoot
+        : join(DATA_DIR(), 'workspace')
+    await mkdir(wsRoot, { recursive: true })
+    const dir = join(wsRoot, 'default')
+    await mkdir(dir, { recursive: true })
+    return { success: true, data: await realpath(dir) }
+  } catch (e: any) { return { success: false, error: e.message } }
+})
+
+// ===== Session permission rules (sessions/<sid>.rules.json, persisted) =====
+const SESSION_RULES = (sid: string) => join(SESSIONS_DIR(), sid + '.rules.json')
+ipcMain.handle('session-rules:read', async (_, sid: string) => {
+  await ensureDirs()
+  return { success: true, data: await readJson(SESSION_RULES(sid), []) }
+})
+ipcMain.handle('session-rules:write', async (_, sid: string, rules: unknown) => {
+  try { await ensureDirs(); await writeJson(SESSION_RULES(sid), rules); return { success: true } }
+  catch (e: any) { return { success: false, error: e.message } }
+})
+ipcMain.handle('session-rules:delete', async (_, sid: string) => {
+  try { await unlink(SESSION_RULES(sid)); return { success: true } }
+  catch (e: any) { return { success: e?.code === 'ENOENT' } }
 })
 
 // ===== Models =====

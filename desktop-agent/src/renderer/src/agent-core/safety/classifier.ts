@@ -15,14 +15,17 @@ import type {
   RiskAssessment,
   SandboxMode,
   ApprovalPolicy,
-  AllowlistEntry
+  AllowlistEntry,
+  PermissionRule
 } from '../types'
 
 export interface ClassifyContext {
   sandbox: SandboxMode
   workspaceRoot?: string
   cwd?: string // turn-scoped project dir; the loop resolves relative paths against it
-  commandRules?: { allow?: string[]; deny?: string[] } // per-project shell rules (regex sources)
+  /** Merged permission rules (session first, then project). Unified replacement
+   *  for the old allowlist + per-project commandRules. */
+  rules?: PermissionRule[]
 }
 
 export type SafetyAction = 'auto' | 'ask' | 'deny'
@@ -120,8 +123,16 @@ const DANGEROUS: { re: RegExp; label: string }[] = [
   { re: /\bgit\s+clean\s+-[a-z]*f/, label: 'git 清理未跟踪文件' },
   { re: /\bfind\b[^;|&]*\s-delete\b/, label: 'find 删除文件' },
   { re: /\bsed\s+(-[A-Za-z]+\s+)*-i\b/, label: 'sed 原地改文件' },
-  { re: /\biex\b|\bInvoke-Expression\b/i, label: 'PowerShell 动态执行' }
+  { re: /\biex\b|\bInvoke-Expression\b/i, label: 'PowerShell 动态执行' },
+  // Long-flag / PowerShell equivalents of the short-form dangerous patterns.
+  { re: /\brm\b[^|;&]*(-{1,2}(recursive|force|rf|fr|r|f)\b|--recursive|--force)/, label: 'rm 递归/强制删除' },
+  { re: /\bRemove-Item\b[^|;&]*(-Recurse|-Force)/i, label: 'PowerShell 递归/强制删除' }
 ]
+
+// High-risk base commands: even if a specific dangerous pattern doesn't fire
+// (e.g. an unusual flag spelling), an allow rule must NOT auto-run these — they
+// always require asking. Defense-in-depth against classifier gaps.
+const HIGH_RISK_BASE = /^(sudo\s+)?(rm|del|rmdir|format|mkfs|dd|shutdown|reboot|halt|poweroff|Remove-Item|Invoke-Expression|iex)\b/i
 
 // Commands that reach the network (downloads, installs, remote git).
 const NETWORK: RegExp[] = [
@@ -256,8 +267,7 @@ export function decide(
   name: string,
   ctx: ClassifyContext,
   policy: ApprovalPolicy,
-  allowlisted: boolean,
-  command?: string
+  subject?: string
 ): Decision {
   const { level } = assessment
 
@@ -268,36 +278,37 @@ export function decide(
     return { action: 'deny', assessment, reason: '只读沙箱下禁止写入与命令执行' }
   }
 
-  // 1.5) Per-project command rules (run_shell only). An empty/whitespace
-  //      command is denied outright (it's never a valid tool arg). deny rules
-  //      hard-block (Codex "deny" wins); allow auto-runs EXCEPT intrinsically
-  //      dangerous commands and commands containing shell metacharacters
-  //      (including newlines, which act as command separators under `shell:true`
-  //      and would let an unanchored rule auto-run a chained payload). Rules
-  //      match the trimmed command; malformed regex is skipped.
-  if (name === 'run_shell' && command !== undefined) {
-    const cmd = command.trim()
-    if (!cmd) return { action: 'deny', assessment, reason: '命令为空' }
-    if (ctx.commandRules) {
-      for (const pat of ctx.commandRules.deny ?? []) {
-        try {
-          if (new RegExp(pat).test(cmd)) {
-            return { action: 'deny', assessment, reason: `项目规则拒绝（匹配 ${pat}）` }
-          }
-        } catch {
-          /* skip malformed deny pattern */
-        }
+  // 1.5) Unified permission rules (merged session > project). Evaluation is a
+  //      true deny > allow: FIRST scan every rule for a deny match (deny always
+  //      wins, regardless of scope/order), THEN scan for an allow match. An empty
+  //      shell command or write path is denied outright. allow auto-runs ONLY for
+  //      non-dangerous, non-high-risk-base shell commands without shell
+  //      metacharacters/newlines (chaining bypass). Malformed regex is skipped.
+  if (name === 'run_shell' && subject !== undefined && !subject.trim()) {
+    return { action: 'deny', assessment, reason: '命令为空' }
+  }
+  if (name === 'write_file' && subject !== undefined && !subject.trim()) {
+    return { action: 'deny', assessment, reason: '路径为空' }
+  }
+  if (ctx.rules && subject) {
+    const subj = subject.trim()
+    const matches = (pat: string): boolean => {
+      try { return new RegExp(pat).test(subj) } catch { return false }
+    }
+    const applies = (rule: { tool?: string }): boolean => !rule.tool || rule.tool === name || rule.tool === '*'
+    // Pass 1: deny (highest priority).
+    for (const rule of ctx.rules) {
+      if (rule.action === 'deny' && applies(rule) && matches(rule.pattern)) {
+        return { action: 'deny', assessment, reason: `规则拒绝（匹配 ${rule.pattern}）` }
       }
-      const hasShellMeta = /[|;&`$>\r\n]/.test(cmd)
-      if (level !== 'dangerous' && !hasShellMeta) {
-        for (const pat of ctx.commandRules.allow ?? []) {
-          try {
-            if (new RegExp(pat).test(cmd)) {
-              return { action: 'auto', assessment, reason: `项目规则允许（匹配 ${pat}）` }
-            }
-          } catch {
-            /* skip malformed allow pattern */
-          }
+    }
+    // Pass 2: allow. Blocked for dangerous, high-risk-base, or shell-metachar commands.
+    const hasShellMeta = name === 'run_shell' && /[|;&`$>\r\n]/.test(subj)
+    const highRisk = name === 'run_shell' && HIGH_RISK_BASE.test(subj)
+    if (level !== 'dangerous' && !hasShellMeta && !highRisk) {
+      for (const rule of ctx.rules) {
+        if (rule.action === 'allow' && applies(rule) && matches(rule.pattern)) {
+          return { action: 'auto', assessment, reason: `规则允许（匹配 ${rule.pattern}）` }
         }
       }
     }
@@ -308,22 +319,17 @@ export function decide(
     return { action: 'auto', assessment, reason: assessment.reason }
   }
 
-  // 3) An explicit allowlist hit auto-runs (except dangerous — never allowlisted).
-  if (allowlisted && level !== 'dangerous') {
-    return { action: 'auto', assessment, reason: `${assessment.reason}（已记住并自动批准）` }
-  }
-
-  // 4) Dangerous always asks, in every policy.
+  // 3) Dangerous always asks, in every policy (never auto, even via rules).
   if (level === 'dangerous') {
     return { action: 'ask', assessment, reason: assessment.reason }
   }
 
-  // 5) Network always asks (sensitive + prompt-injection vector).
+  // 4) Network always asks (sensitive + prompt-injection vector).
   if (level === 'network') {
     return { action: 'ask', assessment, reason: assessment.reason }
   }
 
-  // 6) Plain writes: depend on policy.
+  // 5) Plain writes: depend on policy.
   //    auto → run; on-request → ask; untrusted → ask.
   if (level === 'write') {
     if (policy === 'auto') return { action: 'auto', assessment, reason: assessment.reason }

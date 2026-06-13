@@ -16,6 +16,7 @@ const electronAPI = {
   createProjectDir: (name: string) => ipcRenderer.invoke('project:createDir', name),
   realpathProject: (p: string) => ipcRenderer.invoke('project:realpath', p),
   projectDirExists: (p: string) => ipcRenderer.invoke('project:dirExists', p),
+  ensureDefaultProjectDir: () => ipcRenderer.invoke('project:ensureDefaultDir'),
   // Models
   listModels: () => ipcRenderer.invoke('models:list'),
   saveModels: (models: unknown[]) => ipcRenderer.invoke('models:save', models),
@@ -33,6 +34,10 @@ const electronAPI = {
   appendTrace: (sid: string, event: object) => ipcRenderer.invoke('trace:append', sid, event),
   readTrace: (sid: string) => ipcRenderer.invoke('trace:read', sid),
   deleteTrace: (sid: string) => ipcRenderer.invoke('trace:delete', sid),
+  // Session permission rules (persisted per session)
+  readSessionRules: (sid: string) => ipcRenderer.invoke('session-rules:read', sid),
+  writeSessionRules: (sid: string, rules: unknown) => ipcRenderer.invoke('session-rules:write', sid, rules),
+  deleteSessionRules: (sid: string) => ipcRenderer.invoke('session-rules:delete', sid),
   clearAllData: () => ipcRenderer.invoke('data:clearAll'),
 } as const
 
