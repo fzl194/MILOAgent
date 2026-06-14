@@ -526,8 +526,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // finalize. (Normal completion is handled inside the `done` branch above.)
       if (controller.signal.aborted) {
         const partial = get().currentText
-        if (partial.trim()) {
-          sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: partial, timestamp: Date.now() })
+        const reasoning = get().currentReasoning
+        if (partial.trim() || reasoning.trim()) {
+          sessionStore.addMessage({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: partial,
+            reasoning: reasoning || undefined,
+            timestamp: Date.now()
+          })
         }
         set({ isStreaming: false, currentText: '', currentReasoning: '', abortController: null })
         await sessionStore.saveCurrentMessages()

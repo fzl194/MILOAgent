@@ -10,6 +10,9 @@ interface Props {
 function MessageBubbleBase({ message }: Props): React.ReactNode {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
+  // Hooks MUST be called unconditionally (before any early return) — React's
+  // rules-of-hooks invariant. This state is only used by assistant bubbles.
+  const [showReasoning, setShowReasoning] = useState(false)
 
   if (isTool) {
     return <ToolInvocationCard message={message} />
@@ -20,8 +23,6 @@ function MessageBubbleBase({ message }: Props): React.ReactNode {
   if (!isUser && !message.content.trim() && !message.reasoning) {
     return null
   }
-
-  const [showReasoning, setShowReasoning] = useState(false)
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
