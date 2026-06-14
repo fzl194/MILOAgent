@@ -19,7 +19,6 @@ import { useSessionStore } from './session-store'
 import { useModelStore } from './model-store'
 import { useStatsStore } from './stats-store'
 import { useConfigStore } from './config-store'
-import { useAllowlistStore } from './allowlist-store'
 import { useProjectStore } from './project-store'
 import { usePermissionStore } from './permission-store'
 import { ALL_TOOLS } from '../agent-core/tools/definitions'
@@ -158,7 +157,6 @@ function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): 
       rules: usePermissionStore.getState().merged(pcfg?.rules)
     },
     policy: pcfg?.approvalPolicy ?? cfg.approvalPolicy,
-    getAllowlist: () => useAllowlistStore.getState().all(),
     gate: {
       request: (req: ApprovalRequest) =>
         new Promise<{ decision: ApprovalDecision; source: ApprovalSource }>((resolve) => {

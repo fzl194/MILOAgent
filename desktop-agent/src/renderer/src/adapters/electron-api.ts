@@ -8,8 +8,6 @@ export interface ElectronAPI {
   pickFolder: () => Promise<{ success: boolean; data?: string | null }>
   readConfig: () => Promise<{ success: boolean; data: Record<string, any> | null }>
   writeConfig: (cfg: object) => Promise<{ success: boolean; error?: string }>
-  readAllowlist: () => Promise<{ success: boolean; data?: any[] }>
-  writeAllowlist: (entries: unknown[]) => Promise<{ success: boolean; error?: string }>
   listProjects: () => Promise<{ success: boolean; data?: Project[] }>
   saveProjects: (projects: Project[]) => Promise<{ success: boolean; error?: string }>
   createProjectDir: (name: string) => Promise<{ success: boolean; data?: string; error?: string }>

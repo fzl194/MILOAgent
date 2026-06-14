@@ -215,7 +215,7 @@ export function classify(
 }
 
 // ---------------------------------------------------------------------------
-// Allowlist matching
+// Allowlist matching (test utility for the remember-pattern feature)
 // ---------------------------------------------------------------------------
 
 /** The subject string an allowlist pattern is matched against for a tool call. */
@@ -231,7 +231,8 @@ function subjectFor(name: string, args: Record<string, unknown>): string | null 
   return null
 }
 
-/** True if an allowlist entry pre-approves this call (global or session scope). */
+/** True if an allowlist entry pre-approves this call. Used by the
+ *  remember-pattern tests; production uses PermissionRule via decide(). */
 export function allowlistAllows(
   entries: AllowlistEntry[],
   name: string,
@@ -244,7 +245,6 @@ export function allowlistAllows(
     try {
       if (new RegExp(e.pattern).test(subject)) return true
     } catch {
-      // A malformed remembered pattern shouldn't crash classification.
       continue
     }
   }
@@ -252,7 +252,7 @@ export function allowlistAllows(
 }
 
 // ---------------------------------------------------------------------------
-// decide() — combine intrinsic risk with sandbox + policy + allowlist
+// decide() — combine intrinsic risk with sandbox + policy + permission rules
 // ---------------------------------------------------------------------------
 
 export interface Decision {

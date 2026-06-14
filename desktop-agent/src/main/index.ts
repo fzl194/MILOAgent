@@ -254,15 +254,6 @@ ipcMain.handle('config:write', async (_, cfg: object) => {
   catch (e: any) { return { success: false, error: e.message } }
 })
 
-// ===== Allowlist (persisted "approve & remember" rules) =====
-ipcMain.handle('allowlist:read', async () => {
-  return { success: true, data: await readJson(join(DATA_DIR(), 'allowlist.json'), []) }
-})
-ipcMain.handle('allowlist:write', async (_, entries: unknown[]) => {
-  try { await writeJson(join(DATA_DIR(), 'allowlist.json'), entries); return { success: true } }
-  catch (e: any) { return { success: false, error: e.message } }
-})
-
 // ===== Projects =====
 ipcMain.handle('project:list', async () => {
   await ensureDirs()

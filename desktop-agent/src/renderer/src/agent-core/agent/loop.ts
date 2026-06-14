@@ -7,7 +7,6 @@ import type {
   DoneEventData,
   ToolExecutedEventData,
   ApprovalPolicy,
-  AllowlistEntry,
   ApprovalRequest,
   ApprovalDecision,
   ApprovalSource,
@@ -53,10 +52,8 @@ export interface ApprovalGate {
  * runs automatically with no approval (legacy behaviour, e.g. tests).
  */
 export interface AgentSafety {
-  ctx: ClassifyContext // sandbox + workspace root
+  ctx: ClassifyContext // sandbox + workspace root + permission rules
   policy: ApprovalPolicy
-  /** Current combined allowlist (global + session); read fresh per call. */
-  getAllowlist: () => AllowlistEntry[]
   gate: ApprovalGate // drives the UI approval card
 }
 

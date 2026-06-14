@@ -114,8 +114,9 @@ export interface ApprovalDecision {
 
 export type ApprovalSource = 'user' | 'auto' | 'allowlist' | 'denied'
 
-// A remembered approval rule. `pattern` is a regex source; `name` is the tool
-// it applies to ('*' = any). Session-scoped entries are cleared on restart.
+/** Legacy allowlist entry — kept as a test utility for the remember-pattern
+ *  (directory/command prefix) tests. Production permission matching uses
+ *  PermissionRule via decide(); this shape is not persisted anymore. */
 export interface AllowlistEntry {
   pattern: string
   name: string

@@ -5,7 +5,6 @@ import { useModelStore } from './stores/model-store'
 import { useSessionStore } from './stores/session-store'
 import { useStatsStore } from './stores/stats-store'
 import { useConfigStore } from './stores/config-store'
-import { useAllowlistStore } from './stores/allowlist-store'
 import { useProjectStore } from './stores/project-store'
 
 // One-time cleanup of legacy config.json that may still hold dead LLM fields
@@ -32,13 +31,11 @@ function App(): React.ReactElement {
   const loadSessions = useSessionStore((s) => s.loadSessions)
   const loadStats = useStatsStore((s) => s.loadStats)
   const loadConfig = useConfigStore((s) => s.load)
-  const loadAllowlist = useAllowlistStore((s) => s.load)
   const loadProjects = useProjectStore((s) => s.load)
 
   useEffect(() => {
     ;(async () => {
       await loadConfig()
-      await loadAllowlist()
       // Projects must load before sessions so new sessions can be assigned a
       // projectId (and the sidebar can group by project).
       await loadProjects()
