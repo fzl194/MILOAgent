@@ -4,8 +4,6 @@ import type {
   AgentConfig,
   UsageStats,
   ToolExecutedEventData,
-  ModelConfig,
-  OpenAIChatMessage,
   ApprovalRequest,
   ApprovalDecision,
   ApprovalSource,
@@ -13,7 +11,6 @@ import type {
 } from '../agent-core/types'
 import { AgentLoop, type LoopDoneEvent, type AgentSafety } from '../agent-core/agent/loop'
 import { DefaultContextStrategy, DEFAULT_CONTEXT_WINDOW } from '../agent-core/agent/context-strategy'
-import { LLMProvider } from '../agent-core/llm/provider'
 import { ElectronToolExecutor } from '../adapters/electron-tool-executor'
 import { useSessionStore } from './session-store'
 import { useModelStore } from './model-store'
@@ -63,36 +60,6 @@ async function safeAppendTrace(pid: string, sid: string, event: object): Promise
   const res = await window.electronAPI.appendTrace(pid, sid, event)
   if (!res.success) {
     console.warn('[trace] failed to append event', res.error, event)
-  }
-}
-
-// Ask the model for a concise session title from the first exchange; falls back
-// to truncating the user input on any failure (network error, bad model, etc.).
-async function generateTitle(modelConfig: ModelConfig, userText: string, assistantText: string): Promise<string> {
-  try {
-    console.log('[title] generating via', modelConfig.model)
-    const provider = new LLMProvider({
-      apiKey: modelConfig.apiKey,
-      baseUrl: modelConfig.baseUrl,
-      model: modelConfig.model,
-      temperature: 0,
-      maxTokens: 2048
-    })
-    const messages: OpenAIChatMessage[] = [
-      { role: 'system', content: '你是一个标题生成器。根据下面的对话生成一个简短的中文会话标题(不超过12个字,纯文本,不要标点、不要引号、不要换行)。直接输出标题本身。' },
-      { role: 'user', content: `用户:${userText}\n助手:${assistantText.slice(0, 500)}` }
-    ]
-    let title = ''
-    for await (const ev of provider.chat(messages)) {
-      if (ev.type === 'text_delta') title += ev.data as string
-      else if (ev.type === 'done') console.log('[title] done:', JSON.stringify(ev.data))
-    }
-    const clean = title.trim().replace(/["'“”‘’「」【】]/g, '').replace(/\s+/g, ' ').slice(0, 20)
-    console.log('[title] generated:', clean || '(empty → fallback)')
-    return clean || userText.slice(0, 20).trim()
-  } catch (e: any) {
-    console.warn('[title] generation failed, fallback to truncation:', e?.message ?? e)
-    return userText.slice(0, 20).trim()
   }
 }
 
@@ -494,13 +461,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (d.finishReason !== 'tool_calls') {
               set({ isStreaming: false, lastToolCallCount: toolCallCount })
 
-              // Generate a concise title (first turn only) — fire-and-forget. Uses
-              // a separate system prompt, so it can never share the main conversation's
-              // prefix cache; the extra request is small (maxTokens 2048).
+              // Title from the first user message (truncation, no LLM call).
+              // Previously used an LLM call which couldn't share the main conversation's
+              // prefix cache and wasted tokens — truncation is free and instant.
               if (session && session.title === '新会话') {
-                void generateTitle(modelConfig, text, d.textContent).then((title) =>
-                  sessionStore.renameSession(session.id, title)
-                )
+                const title = text.slice(0, 20).replace(/\n/g, ' ').trim() + (text.length > 20 ? '…' : '')
+                await sessionStore.renameSession(session.id, title)
               }
 
               await sessionStore.saveCurrentMessages()
