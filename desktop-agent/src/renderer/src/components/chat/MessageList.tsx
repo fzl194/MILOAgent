@@ -142,7 +142,7 @@ export function MessageList({ messages, currentText, currentReasoning, isStreami
               </div>
               <div className="min-w-0">
                 <div className="label-tag mb-1">💭 思考过程</div>
-                <div className="max-h-[300px] overflow-y-auto whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-line/50 bg-panel/40 px-4 py-3 text-sm leading-relaxed text-faint shadow-lg backdrop-blur-sm">
+                <div className="whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-line/50 bg-panel/40 px-4 py-3 text-sm leading-relaxed text-faint shadow-lg backdrop-blur-sm">
                   {currentReasoning}
                   <span className="cursor-blink text-accent">▍</span>
                 </div>

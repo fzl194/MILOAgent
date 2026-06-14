@@ -37,6 +37,9 @@ export interface Message {
   // executing (or waiting on approval), 'success'/'failed' once it resolves.
   // Older persisted tool messages have no status → treated as terminal.
   status?: 'running' | 'success' | 'failed'
+  // Reasoning model's thinking process (delta.reasoning_content). Captured during
+  // streaming, saved on the assistant message so it survives after the turn ends.
+  reasoning?: string
   timestamp: number
 }
 

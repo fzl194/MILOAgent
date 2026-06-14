@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import type { Message } from '../../agent-core/types'
 import { ToolInvocationCard } from './ToolInvocationCard'
 import { Markdown } from './Markdown'
@@ -16,11 +16,12 @@ function MessageBubbleBase({ message }: Props): React.ReactNode {
   }
 
   // An assistant turn that produced only tool calls (no prose) renders nothing
-  // here — the calls are already shown as a ToolGroup below; an empty bubble
-  // with just tool-name chips is noise.
-  if (!isUser && !message.content.trim()) {
+  // UNLESS it has reasoning to show.
+  if (!isUser && !message.content.trim() && !message.reasoning) {
     return null
   }
+
+  const [showReasoning, setShowReasoning] = useState(false)
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -56,6 +57,23 @@ function MessageBubbleBase({ message }: Props): React.ReactNode {
           <div className="min-w-0">
             <div className="label-tag mb-1">MILO</div>
             <div className="md-body rounded-2xl rounded-tl-sm border border-line/70 bg-panel/60 px-4 py-3 shadow-lg backdrop-blur-sm">
+              {message.reasoning && (
+                <div className="mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowReasoning((v) => !v)}
+                    className="flex items-center gap-1 text-[11px] text-faint transition hover:text-muted"
+                  >
+                    <span>{showReasoning ? '▾' : '▸'}</span>
+                    <span>💭 思考过程</span>
+                  </button>
+                  {showReasoning && (
+                    <pre className="mt-1.5 max-h-[400px] overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-line/50 bg-base/40 p-2.5 font-sans text-[12px] leading-relaxed text-faint">
+                      {message.reasoning}
+                    </pre>
+                  )}
+                </div>
+              )}
               {message.content && <Markdown>{message.content}</Markdown>}
               {message.toolCalls && message.toolCalls.length > 0 && (
                 <div className={`flex flex-wrap gap-1.5 ${message.content ? 'mt-2' : ''}`}>

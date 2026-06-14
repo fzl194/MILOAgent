@@ -427,10 +427,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (usageSource === 'estimated') turnUsageSource = 'estimated'
             else if (usageSource === 'partial' && turnUsageSource === 'api') turnUsageSource = 'partial'
 
-            // Mirror assistant messages (tagged with modelConfigId) into currentMessages
+            // Mirror assistant messages (tagged with modelConfigId + reasoning snapshot)
+            // into currentMessages. Capture reasoning BEFORE it's cleared below.
+            const reasoningSnapshot = get().currentReasoning
             for (const m of d.appendedMessages) {
               if (m.role === 'assistant') {
-                sessionStore.addMessage({ ...m, modelConfigId: modelConfig.id })
+                sessionStore.addMessage({ ...m, modelConfigId: modelConfig.id, reasoning: reasoningSnapshot || undefined })
               }
             }
 
