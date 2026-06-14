@@ -85,7 +85,7 @@ npm run test:watch   # 监听模式
 仓库已 `git init`。遵循:
 
 - **只在用户明确要求时** `commit` / `push`,不要擅自提交。
-- **不直接提交到默认分支**(main/master);先开分支:`feat/<scope>`、`fix/<scope>`、`docs/<topic>`、`refactor/<scope>`。
+- **默认直接在 `main` 上提交,不要随便开分支**;仅当用户明确要求、或确有并行/隔离需要时才开分支(`feat/<scope>`、`fix/<scope>`、`docs/<topic>`、`refactor/<scope>`)。
 - **提交粒度**:一个逻辑变更一个提交;docs/ 文档变更与对应代码变更可合并或独立,保持原子。
 - **提交信息**(Conventional Commits):
   ```
