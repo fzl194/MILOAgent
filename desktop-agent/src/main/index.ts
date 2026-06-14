@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu, dialog } from 'electron'
 import { join, resolve, isAbsolute } from 'path'
-import { readFile, writeFile, mkdir, unlink, readdir, access, realpath, stat } from 'fs/promises'
+import { readFile, writeFile, mkdir, unlink, readdir, access, realpath, stat, rm } from 'fs/promises'
 import { appendFile } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
@@ -11,6 +11,10 @@ const SESSIONS_DIR = () => join(DATA_DIR(), 'sessions')
 const STATS_DIR = () => join(DATA_DIR(), 'stats')
 const TRACES_DIR = () => join(DATA_DIR(), 'traces')
 const PROJECTS_FILE = () => join(DATA_DIR(), 'projects.json')
+// Per-project data buckets (P5): projects/<pid>/traces/<sid>.jsonl + projects/<pid>/stats/events.jsonl
+const PROJECTS_DATA_DIR = () => join(DATA_DIR(), 'projects')
+const projectTracesDir = (pid: string) => join(PROJECTS_DATA_DIR(), pid, 'traces')
+const projectStatsFile = (pid: string) => join(PROJECTS_DATA_DIR(), pid, 'stats', 'events.jsonl')
 let mainWindow: BrowserWindow | null = null
 
 async function pathExists(p: string): Promise<boolean> {
@@ -93,6 +97,7 @@ async function ensureDirs(): Promise<void> {
   await mkdir(STATS_DIR(), { recursive: true })
   await mkdir(TRACES_DIR(), { recursive: true })
   await runMigrationOnce()
+  await migrateStatsToProjects()
 }
 
 // One-time migration to the project-level model, guarded by an in-process mutex
@@ -120,6 +125,57 @@ function runMigrationOnce(): Promise<void> {
     })
   }
   return migratePromise
+}
+
+// One-time migration: distribute global traces/ + stats/events.jsonl into
+// per-project buckets (projects/<pid>/traces + projects/<pid>/stats), resolving
+// each session's projectId from the sessions index (fallback: default project).
+// Idempotent — only acts while global traces/ has files or global stats is non-empty.
+let statsMigrated = false
+async function migrateStatsToProjects(): Promise<void> {
+  if (statsMigrated) return
+  const sessions = await readJson<Array<{ id: string; projectId?: string }>>(join(DATA_DIR(), 'index.json'), [])
+  const projects = await readJson<Array<{ id: string; isDefault?: boolean }>>(PROJECTS_FILE(), [])
+  const sidToPid = new Map<string, string>()
+  for (const s of sessions) if (s.id && s.projectId) sidToPid.set(s.id, s.projectId)
+  const defaultPid = projects.find((p) => p.isDefault)?.id ?? projects[0]?.id ?? 'default'
+  const resolvePid = (sid?: string): string => (sid && sidToPid.get(sid)) || defaultPid
+
+  // Trace files → projects/<pid>/traces/<sid>.jsonl
+  const traceFiles = await readdir(TRACES_DIR()).catch(() => [])
+  for (const f of traceFiles) {
+    if (!f.endsWith('.jsonl')) continue
+    const sid = f.slice(0, -6)
+    const pid = resolvePid(sid)
+    await mkdir(projectTracesDir(pid), { recursive: true })
+    try {
+      await writeFile(join(projectTracesDir(pid), f), await readFile(join(TRACES_DIR(), f), 'utf-8'), 'utf-8')
+      await unlink(join(TRACES_DIR(), f))
+    } catch { /* best effort */ }
+  }
+
+  // Stats events → projects/<pid>/stats/events.jsonl
+  try {
+    const raw = await readFile(join(STATS_DIR(), 'events.jsonl'), 'utf-8')
+    if (raw.trim()) {
+      const byPid = new Map<string, string[]>()
+      for (const line of raw.split('\n')) {
+        const t = line.trim()
+        if (!t) continue
+        let ev: any
+        try { ev = JSON.parse(t) } catch { continue }
+        const pid = resolvePid(ev?.sessionId)
+        if (!byPid.has(pid)) byPid.set(pid, [])
+        byPid.get(pid)!.push(t)
+      }
+      for (const [pid, lines] of byPid) {
+        await mkdir(join(projectStatsFile(pid), '..'), { recursive: true })
+        await writeFile(projectStatsFile(pid), lines.join('\n') + '\n', 'utf-8')
+      }
+      await writeFile(join(STATS_DIR(), 'events.jsonl'), '', 'utf-8') // clear global
+    }
+  } catch { /* no global stats file */ }
+  statsMigrated = true
 }
 
 async function readJson<T>(p: string, fb: T): Promise<T> {
@@ -383,14 +439,15 @@ ipcMain.handle('session:deleteMessages', async (_, sid: string) => {
   catch (e: any) { return { success: false, error: e.message } }
 })
 
-// ===== Stats =====
-ipcMain.handle('stats:append', async (_, event: object) => {
+// ===== Stats (per-project: projects/<pid>/stats/events.jsonl) =====
+ipcMain.handle('stats:append', async (_, pid: string, event: object) => {
   await ensureDirs()
+  await mkdir(join(projectStatsFile(pid), '..'), { recursive: true })
   let error: string | undefined
   await serializeStatsWrite(
     () =>
       new Promise<void>((resolve) => {
-        appendFile(join(STATS_DIR(), 'events.jsonl'), JSON.stringify(event) + '\n', (err) => {
+        appendFile(projectStatsFile(pid), JSON.stringify(event) + '\n', (err) => {
           if (err) error = (err as Error).message
           resolve()
         })
@@ -398,89 +455,78 @@ ipcMain.handle('stats:append', async (_, event: object) => {
   )
   return error ? { success: false, error } : { success: true }
 })
-ipcMain.handle('stats:read', async () => {
+ipcMain.handle('stats:read', async (_, pid: string) => {
   await ensureDirs()
   try {
-    const content = await readFile(join(STATS_DIR(), 'events.jsonl'), 'utf-8')
-    // Parse line-by-line and skip malformed/truncated lines (e.g. a torn final
-    // line written during a concurrent append) instead of failing the whole read.
+    const content = await readFile(projectStatsFile(pid), 'utf-8')
     const events: unknown[] = []
     for (const line of content.split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
-      try {
-        events.push(JSON.parse(trimmed))
-      } catch {
-        /* skip a single corrupt line — keep the rest */
-      }
+      try { events.push(JSON.parse(trimmed)) } catch { /* skip corrupt line */ }
     }
     return { success: true, data: events }
   } catch {
     return { success: true, data: [] }
   }
 })
-
-// ===== Traces (atomic event stream, one jsonl per session) =====
-ipcMain.handle('trace:append', async (_, sid: string, event: object) => {
+ipcMain.handle('stats:pruneBySession', async (_, pid: string, sid: string) => {
   await ensureDirs()
+  try {
+    await serializeStatsWrite(async () => {
+      let content = ''
+      try { content = await readFile(projectStatsFile(pid), 'utf-8') } catch { return }
+      const kept = content.split('\n').filter((line) => {
+        const trimmed = line.trim()
+        if (!trimmed) return false
+        try { return (JSON.parse(trimmed) as { sessionId?: string }).sessionId !== sid } catch { return false }
+      }).join('\n')
+      await writeFile(projectStatsFile(pid), kept + (kept ? '\n' : ''), 'utf-8')
+    })
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e.message }
+  }
+})
+
+// ===== Traces (per-project: projects/<pid>/traces/<sid>.jsonl) =====
+ipcMain.handle('trace:append', async (_, pid: string, sid: string, event: object) => {
+  await ensureDirs()
+  await mkdir(projectTracesDir(pid), { recursive: true })
   return new Promise<{ success: boolean; error?: string }>((resolve) => {
-    appendFile(join(TRACES_DIR(), sid + '.jsonl'), JSON.stringify(event) + '\n', (err) => {
+    appendFile(join(projectTracesDir(pid), sid + '.jsonl'), JSON.stringify(event) + '\n', (err) => {
       resolve(err ? { success: false, error: (err as Error).message } : { success: true })
     })
   })
 })
-
-ipcMain.handle('trace:read', async (_, sid: string) => {
+ipcMain.handle('trace:read', async (_, pid: string, sid: string) => {
   await ensureDirs()
   try {
-    const content = await readFile(join(TRACES_DIR(), sid + '.jsonl'), 'utf-8')
-    // Parse line-by-line and skip malformed/truncated lines (same tolerance as stats:read)
+    const content = await readFile(join(projectTracesDir(pid), sid + '.jsonl'), 'utf-8')
     const events: unknown[] = []
     for (const line of content.split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
-      try {
-        events.push(JSON.parse(trimmed))
-      } catch {
-        /* skip a single corrupt line — keep the rest */
-      }
+      try { events.push(JSON.parse(trimmed)) } catch { /* skip */ }
     }
     return { success: true, data: events }
   } catch {
     return { success: true, data: [] }
   }
 })
-
-ipcMain.handle('trace:delete', async (_, sid: string) => {
+ipcMain.handle('trace:delete', async (_, pid: string, sid: string) => {
   try {
-    await unlink(join(TRACES_DIR(), sid + '.jsonl'))
+    await unlink(join(projectTracesDir(pid), sid + '.jsonl'))
     return { success: true }
   } catch (e: any) {
-    // ENOENT is fine — old sessions have no trace file
     return { success: e?.code === 'ENOENT' }
   }
 })
 
-// Remove a session's orphan events from stats (called on session delete)
-ipcMain.handle('stats:pruneBySession', async (_, sid: string) => {
-  await ensureDirs()
+// ===== Delete a project's entire data bucket (traces + stats) =====
+ipcMain.handle('project:delete', async (_, pid: string) => {
   try {
-    await serializeStatsWrite(async () => {
-      const content = await readFile(join(STATS_DIR(), 'events.jsonl'), 'utf-8')
-      const kept = content
-        .split('\n')
-        .filter((line) => {
-          const trimmed = line.trim()
-          if (!trimmed) return false
-          try {
-            return (JSON.parse(trimmed) as { sessionId?: string }).sessionId !== sid
-          } catch {
-            return false
-          }
-        })
-        .join('\n')
-      await writeFile(join(STATS_DIR(), 'events.jsonl'), kept + (kept ? '\n' : ''), 'utf-8')
-    })
+    await rm(join(PROJECTS_DATA_DIR(), pid), { recursive: true, force: true })
     return { success: true }
   } catch (e: any) {
     return { success: false, error: e.message }
@@ -492,10 +538,11 @@ ipcMain.handle('data:clearAll', async () => {
   try {
     await ensureDirs()
     // sessions/ holds BOTH <sid>.json messages and <sid>.rules.json permission
-    // rules — clearing the directory wipes both. traces + stats go too.
+    // rules — clearing the directory wipes both. Per-project traces+stats live
+    // under projects/<pid>/ — wipe the whole bucket dir.
     await clearFlatFiles(SESSIONS_DIR())
-    await clearFlatFiles(TRACES_DIR())
-    await writeFile(join(STATS_DIR(), 'events.jsonl'), '', 'utf-8')
+    await rm(PROJECTS_DATA_DIR(), { recursive: true, force: true })
+    await mkdir(PROJECTS_DATA_DIR(), { recursive: true })
     await writeJson(join(DATA_DIR(), 'index.json'), [])
     await unlink(join(DATA_DIR(), 'allowlist.json')).catch(() => undefined) // vestigial
     // Reset projects to a fresh default WITH a real working dir, and restore a

@@ -3,7 +3,7 @@ import type { TraceEvent } from '../../agent-core/types'
 
 const isNum = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
 
-export function TraceTimeline({ sessionId }: { sessionId: string }): React.ReactElement {
+export function TraceTimeline({ projectId, sessionId }: { projectId: string; sessionId: string }): React.ReactElement {
   const [events, setEvents] = useState<TraceEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -20,7 +20,7 @@ export function TraceTimeline({ sessionId }: { sessionId: string }): React.React
     setError(null)
     ;(async () => {
       try {
-        const res = await window.electronAPI.readTrace(sessionId)
+        const res = await window.electronAPI.readTrace(projectId, sessionId)
         if (!cancelled) setEvents((res.data || []) as TraceEvent[])
       } catch (e) {
         if (!cancelled) {

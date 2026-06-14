@@ -156,7 +156,7 @@ export function StatsPanel(): React.ReactElement {
     let cancelled = false
     ;(async () => {
       const acc: Record<string, ToolStat> = {}
-      const results = await Promise.allSettled(sessions.map((s) => window.electronAPI.readTrace(s.id)))
+      const results = await Promise.allSettled(sessions.map((s) => window.electronAPI.readTrace(s.projectId, s.id)))
       for (const r of results) {
         if (r.status !== 'fulfilled') continue // skip a failed session, keep the rest
         for (const ev of (r.value.data || []) as Array<{

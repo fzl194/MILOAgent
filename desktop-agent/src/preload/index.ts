@@ -24,14 +24,16 @@ const electronAPI = {
   readSessionMessages: (sid: string) => ipcRenderer.invoke('session:readMessages', sid),
   writeSessionMessages: (sid: string, msgs: unknown[]) => ipcRenderer.invoke('session:writeMessages', sid, msgs),
   deleteSessionMessages: (sid: string) => ipcRenderer.invoke('session:deleteMessages', sid),
-  // Stats
-  appendStat: (event: object) => ipcRenderer.invoke('stats:append', event),
-  readStats: () => ipcRenderer.invoke('stats:read'),
-  pruneStatsBySession: (sid: string) => ipcRenderer.invoke('stats:pruneBySession', sid),
-  // Traces (atomic event stream per session)
-  appendTrace: (sid: string, event: object) => ipcRenderer.invoke('trace:append', sid, event),
-  readTrace: (sid: string) => ipcRenderer.invoke('trace:read', sid),
-  deleteTrace: (sid: string) => ipcRenderer.invoke('trace:delete', sid),
+  // Stats (per-project)
+  appendStat: (pid: string, event: object) => ipcRenderer.invoke('stats:append', pid, event),
+  readStats: (pid: string) => ipcRenderer.invoke('stats:read', pid),
+  pruneStatsBySession: (pid: string, sid: string) => ipcRenderer.invoke('stats:pruneBySession', pid, sid),
+  // Traces (per-project, per-session)
+  appendTrace: (pid: string, sid: string, event: object) => ipcRenderer.invoke('trace:append', pid, sid, event),
+  readTrace: (pid: string, sid: string) => ipcRenderer.invoke('trace:read', pid, sid),
+  deleteTrace: (pid: string, sid: string) => ipcRenderer.invoke('trace:delete', pid, sid),
+  // Delete a project's data bucket (traces + stats)
+  deleteProject: (pid: string) => ipcRenderer.invoke('project:delete', pid),
   // Session permission rules (persisted per session)
   readSessionRules: (sid: string) => ipcRenderer.invoke('session-rules:read', sid),
   writeSessionRules: (sid: string, rules: unknown) => ipcRenderer.invoke('session-rules:write', sid, rules),

@@ -212,6 +212,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         st.activeProjectId === id ? projects.find((p) => p.isDefault)?.id ?? projects[0]?.id ?? null : st.activeProjectId
       return { projects, activeProjectId }
     })
+    // P5: also delete the project's data bucket (traces + stats).
+    await window.electronAPI.deleteProject(id)
     await get().persist()
     // NOTE: P1 keeps session/trace/stats files sid-keyed globally, so deleting a
     // project does not yet remove its sessions' files. Project-scoped cleanup

@@ -21,13 +21,15 @@ export interface ElectronAPI {
   readSessionMessages: (sid: string) => Promise<{ success: boolean; data?: any[] }>
   writeSessionMessages: (sid: string, msgs: unknown[]) => Promise<{ success: boolean; error?: string }>
   deleteSessionMessages: (sid: string) => Promise<{ success: boolean; error?: string }>
-  appendStat: (event: object) => Promise<{ success: boolean; error?: string }>
-  readStats: () => Promise<{ success: boolean; data?: any[] }>
-  pruneStatsBySession: (sid: string) => Promise<{ success: boolean; error?: string }>
-  // Traces (atomic event stream per session)
-  appendTrace: (sid: string, event: object) => Promise<{ success: boolean; error?: string }>
-  readTrace: (sid: string) => Promise<{ success: boolean; data?: any[] }>
-  deleteTrace: (sid: string) => Promise<{ success: boolean }>
+  appendStat: (pid: string, event: object) => Promise<{ success: boolean; error?: string }>
+  readStats: (pid: string) => Promise<{ success: boolean; data?: any[] }>
+  pruneStatsBySession: (pid: string, sid: string) => Promise<{ success: boolean; error?: string }>
+  // Traces (per-project, per-session)
+  appendTrace: (pid: string, sid: string, event: object) => Promise<{ success: boolean; error?: string }>
+  readTrace: (pid: string, sid: string) => Promise<{ success: boolean; data?: any[] }>
+  deleteTrace: (pid: string, sid: string) => Promise<{ success: boolean }>
+  // Delete a project's data bucket
+  deleteProject: (pid: string) => Promise<{ success: boolean; error?: string }>
   readSessionRules: (sid: string) => Promise<{ success: boolean; data?: any[] }>
   writeSessionRules: (sid: string, rules: unknown) => Promise<{ success: boolean; error?: string }>
   deleteSessionRules: (sid: string) => Promise<{ success: boolean }>

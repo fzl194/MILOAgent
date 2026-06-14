@@ -59,8 +59,8 @@ const sessionMetaWritten = new Set<string>()
 
 // Append a trace event and warn (rather than fail silently) if persistence fails.
 // Trace rows are the core observability surface — a silent drop would hide data loss.
-async function safeAppendTrace(sid: string, event: object): Promise<void> {
-  const res = await window.electronAPI.appendTrace(sid, event)
+async function safeAppendTrace(pid: string, sid: string, event: object): Promise<void> {
+  const res = await window.electronAPI.appendTrace(pid, sid, event)
   if (!res.success) {
     console.warn('[trace] failed to append event', res.error, event)
   }
@@ -264,6 +264,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isStreaming: true, currentText: '', lastToolCallCount: 0, abortController: controller })
 
     const session = sessionStore.sessions.find((s) => s.id === sessionId)
+    const projectId = session?.projectId ?? useProjectStore.getState().activeProjectId ?? ''
     // Model resolution: session's model → project default → global default.
     const projDefaultId = useProjectStore.getState().getActive()?.config?.defaultModelId
     let modelConfig = session ? modelStore.getModel(session.modelConfigId) : undefined
@@ -293,10 +294,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Ensure a session_meta row exists (written once per session)
     if (!sessionMetaWritten.has(sessionId)) {
-      const existing = await window.electronAPI.readTrace(sessionId)
+      const existing = await window.electronAPI.readTrace(projectId, sessionId)
       const hasMeta = (existing.data || []).some((e) => (e as { type?: string }).type === 'session_meta')
       if (!hasMeta) {
-        await safeAppendTrace(sessionId,{
+        await safeAppendTrace(projectId, sessionId,{
           type: 'session_meta',
           sessionId,
           modelConfigId: modelConfig.id,
@@ -393,7 +394,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               })
             }
             // Persist the atomic tool_call event
-            await safeAppendTrace(sessionId,{
+            await safeAppendTrace(projectId, sessionId,{
               type: 'tool_call',
               toolCallId: d.toolCallId,
               callId: lastCallId,
@@ -455,7 +456,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
 
             // Persist the atomic llm_call event (incremental: appendedMessages only)
-            await safeAppendTrace(sessionId,{
+            await safeAppendTrace(projectId, sessionId,{
               type: 'llm_call',
               callId: d.callId,
               sessionId,
@@ -496,7 +497,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
 
               await sessionStore.saveCurrentMessages()
-              await useStatsStore.getState().recordEvent({
+              await useStatsStore.getState().recordEvent(projectId, {
                 id: crypto.randomUUID(),
                 sessionId,
                 modelConfigId: modelConfig.id,

@@ -77,9 +77,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const deleted = get().sessions.find((s) => s.id === id)
     const projectOfDeleted = deleted?.projectId
     await window.electronAPI.deleteSessionMessages(id)
-    await window.electronAPI.deleteTrace(id)
+    await window.electronAPI.deleteTrace(projectOfDeleted ?? '', id)
     await window.electronAPI.deleteSessionRules(id)
-    await window.electronAPI.pruneStatsBySession(id)
+    await window.electronAPI.pruneStatsBySession(projectOfDeleted ?? '', id)
 
     const remaining = get().sessions.filter((s) => s.id !== id)
     // When the deleted session was active, move to the next session IN THE SAME
