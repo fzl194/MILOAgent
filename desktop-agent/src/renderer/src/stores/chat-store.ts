@@ -6,8 +6,7 @@ import type {
   ToolExecutedEventData,
   ApprovalRequest,
   ApprovalDecision,
-  ApprovalSource,
-  ProjectConfig
+  ApprovalSource
 } from '../agent-core/types'
 import { AgentLoop, type LoopDoneEvent, type AgentSafety } from '../agent-core/agent/loop'
 import { DefaultContextStrategy, DEFAULT_CONTEXT_WINDOW } from '../agent-core/agent/context-strategy'
@@ -16,10 +15,10 @@ import { ElectronToolExecutor } from '../adapters/electron-tool-executor'
 import { useSessionStore } from './session-store'
 import { useModelStore } from './model-store'
 import { useStatsStore } from './stats-store'
-import { useConfigStore } from './config-store'
 import { useProjectStore } from './project-store'
 import { usePermissionStore } from './permission-store'
 import { ALL_TOOLS } from '../agent-core/tools/definitions'
+import { getEffectiveConfig, type EffectiveConfig } from '../lib/effective-config'
 
 function estimateTokens(text: string): number {
   const chinese = (text.match(/[一-鿿]/g) || []).length
@@ -64,36 +63,6 @@ async function safeAppendTrace(pid: string, sid: string, event: object): Promise
   }
 }
 
-// Read fresh each turn from the config store (the single source of truth, kept
-// up-to-date by the Settings panel). Avoids a per-message IPC round-trip and a
-// stale module-level cache.
-function loadConfig(): AgentConfig {
-  return useConfigStore.getState().config
-}
-
-// The active project's directory, when bound and present. The agent's shell and
-// relative file paths run inside it; the default project (no dir) returns undefined.
-function activeProjectDir(): string | undefined {
-  const ps = useProjectStore.getState()
-  const active = ps.getActive()
-  return active?.dirPath && !ps.dirMissing[active.id] ? active.dirPath : undefined
-}
-
-// The active project's config overrides (undefined for the default project).
-function activeProjectConfig(): ProjectConfig | undefined {
-  return useProjectStore.getState().getActive()?.config
-}
-
-// Compose the effective system prompt: global base ← project prompt ← cwd note.
-function buildSystemPrompt(base: string, projectPrompt: string | undefined, dir?: string): string {
-  let s = base.trim()
-  if (projectPrompt && projectPrompt.trim()) {
-    s = s ? `${s}\n\n${projectPrompt.trim()}` : projectPrompt.trim()
-  }
-  if (!dir) return s
-  const note = `# 工作目录\n你的当前工作目录是 \`${dir}\`。相对路径基于此解析，shell 命令默认在此目录下执行；请优先在此目录内工作。`
-  return s ? `${s}\n\n${note}` : note
-}
 
 // ---------------------------------------------------------------------------
 // Approval gate: the AgentLoop calls gate.request(req) when a tool call needs
@@ -112,19 +81,16 @@ function pushPendingApproval(req: ApprovalRequest): void {
 // sandbox/policy/workspace from the config store (with a session-level workspace
 // override) and the combined allowlist. `cwd` is the turn-scoped project dir,
 // used by the loop to resolve relative write_file paths before classification.
-function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): AgentSafety {
-  const cfg = useConfigStore.getState().config
-  // Effective safety = global ← active project overrides.
-  const pcfg = useProjectStore.getState().getActive()?.config
+function buildSafety(turnId: string, effective: EffectiveConfig): AgentSafety {
   return {
     ctx: {
-      sandbox: pcfg?.sandbox ?? cfg.sandbox,
-      workspaceRoot: workspaceOverride,
-      cwd,
+      sandbox: effective.sandbox,
+      workspaceRoot: effective.workspaceRoot,
+      cwd: effective.cwd,
       // Unified rules: session scope first, then project scope.
-      rules: usePermissionStore.getState().merged(pcfg?.rules)
+      rules: usePermissionStore.getState().merged(effective.projectRules)
     },
-    policy: pcfg?.approvalPolicy ?? cfg.approvalPolicy,
+    policy: effective.approvalPolicy,
     gate: {
       request: (req: ApprovalRequest) =>
         new Promise<{ decision: ApprovalDecision; source: ApprovalSource }>((resolve) => {
@@ -135,7 +101,10 @@ function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): 
             if (decision.approved && decision.remember && req.patterns.length > 0) {
               const newRules = req.patterns.map((p) => ({ pattern: p, action: 'allow' as const, tool: req.name }))
               if (decision.scope === 'project') {
-                const proj = useProjectStore.getState().getActive()
+                // Remember to the project THIS TURN belongs to (effective.projectId),
+                // not just the active project — keeps the whole turn bound to
+                // session.projectId, consistent with how effective config is resolved.
+                const proj = useProjectStore.getState().projects.find((p) => p.id === effective.projectId)
                 if (proj) {
                   const existing = proj.config?.rules ?? []
                   const mergedRules = [
@@ -247,17 +216,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
 
-    const config = loadConfig()
-    // Bind the turn to the active project: inject the working directory into the
-    // system prompt and use it as the safety workspace boundary (unless the
-    // session overrides workspaceRoot). Effective config = global ← project.
-    const projDir = activeProjectDir()
-    const pcfg = activeProjectConfig()
+    // Effective config (global ← project ← cwd), centralized in
+    // lib/effective-config so turnConfig and buildSafety share one merge.
+    const effective = getEffectiveConfig(projectId, { workspaceOverride: session?.workspaceRoot })
     const turnConfig: AgentConfig = {
-      ...config,
-      sandbox: pcfg?.sandbox ?? config.sandbox,
-      approvalPolicy: pcfg?.approvalPolicy ?? config.approvalPolicy,
-      systemPrompt: buildSystemPrompt(config.systemPrompt, pcfg?.systemPrompt, projDir)
+      systemPrompt: effective.systemPrompt,
+      sandbox: effective.sandbox,
+      approvalPolicy: effective.approvalPolicy
     }
     const turnId = crypto.randomUUID()
 
@@ -301,14 +266,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Freeze the turn's cwd on the executor so tool execution can't drift if the
     // user switches project mid-turn (approval wait).
-    executor.setCwd(projDir)
+    executor.setCwd(effective.cwd)
 
     const loop = new AgentLoop(
       { apiKey: modelConfig.apiKey, baseUrl: modelConfig.baseUrl, model: modelConfig.model },
       executor,
       turnConfig,
       history,
-      buildSafety(turnId, session?.workspaceRoot ?? projDir, projDir),
+      buildSafety(turnId, effective),
       controller.signal,
       contextStrategy
     )
@@ -483,7 +448,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
                       { role: 'user' as const, content: '请用一句话概括本次对话主题作为会话标题（不超过15字，纯文本，不要标点、引号、换行）。直接输出标题。' }
                     ]
                     let title = ''
-                    for await (const ev of provider.chat(msgs)) {
+                    // Pass ALL_TOOLS so the chat template expands identically to the
+                    // main turn → same token sequence → prefix cache hit. Tool calls in
+                    // the title response (unlikely) are simply ignored.
+                    for await (const ev of provider.chat(msgs, ALL_TOOLS)) {
                       if (ev.type === 'text_delta') title += ev.data as string
                     }
                     title = title.trim().replace(/["'""''「」【】\n]/g, '').slice(0, 20)
