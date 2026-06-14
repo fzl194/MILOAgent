@@ -3,10 +3,14 @@ import type { UsageEvent } from '../agent-core/types'
 import { useProjectStore } from './project-store'
 
 // P5: stats are physically split per-project (projects/<pid>/stats/events.jsonl).
-// loadStats() reads ALL projects' stats and concatenates for the global view;
-// recordEvent writes to the active project's stats file.
+// loadStats() reads ALL projects' stats — `events` is the concatenated global
+// view; `eventsByProject` keeps the bucket-of-origin so the stats panel can
+// filter by project without re-reading from disk. recordEvent writes to the
+// active project's stats file and updates both views.
 interface StatsState {
   events: UsageEvent[]
+  /** Per-project events, keyed by projectId. */
+  eventsByProject: Record<string, UsageEvent[]>
   isLoaded: boolean
   loadStats: () => Promise<void>
   recordEvent: (pid: string, e: UsageEvent) => Promise<void>
@@ -14,17 +18,30 @@ interface StatsState {
 
 export const useStatsStore = create<StatsState>((set) => ({
   events: [],
+  eventsByProject: {},
   isLoaded: false,
 
   loadStats: async () => {
-    const pids = useProjectStore.getState().projects.map((p) => p.id)
-    const results = await Promise.all(pids.map((pid) => window.electronAPI.readStats(pid)))
-    const events = results.flatMap((r) => (r.data as UsageEvent[]) || [])
-    set({ events, isLoaded: true })
+    const projects = useProjectStore.getState().projects
+    const results = await Promise.all(
+      projects.map((p) =>
+        window.electronAPI.readStats(p.id).then((r) => [p.id, (r.data as UsageEvent[]) || []] as const)
+      )
+    )
+    const eventsByProject: Record<string, UsageEvent[]> = {}
+    const events: UsageEvent[] = []
+    for (const [pid, evs] of results) {
+      eventsByProject[pid] = evs
+      events.push(...evs)
+    }
+    set({ events, eventsByProject, isLoaded: true })
   },
 
   recordEvent: async (pid, e) => {
     await window.electronAPI.appendStat(pid, e)
-    set((st) => ({ events: [...st.events, e] }))
+    set((st) => ({
+      events: [...st.events, e],
+      eventsByProject: { ...st.eventsByProject, [pid]: [...(st.eventsByProject[pid] ?? []), e] }
+    }))
   }
 }))

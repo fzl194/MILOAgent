@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useStatsStore } from '../../stores/stats-store'
 import { useModelStore } from '../../stores/model-store'
 import { useSessionStore } from '../../stores/session-store'
+import { useProjectStore } from '../../stores/project-store'
 import { loadPricing, savePricing, computeCost, lookupPricing, formatCost, type ModelPricing } from '../../lib/pricing'
 
 /** Convert an epoch-ms timestamp to a YYYY-MM-DD day string, tolerating bad input. */
@@ -135,6 +136,17 @@ export function StatsPanel(): React.ReactElement {
   const loadStats = useStatsStore((s) => s.loadStats)
   const models = useModelStore((s) => s.models)
   const sessions = useSessionStore((s) => s.sessions)
+  const projects = useProjectStore((s) => s.projects)
+  const eventsByProject = useStatsStore((s) => s.eventsByProject)
+  // Project filter: 'all' = aggregate every project; otherwise a single projectId.
+  const [selectedProjectId, setSelectedProjectId] = useState<string | 'all'>('all')
+  // If the selected project disappears (deleted), fall back to the global view.
+  useEffect(() => {
+    if (selectedProjectId !== 'all' && !projects.some((p) => p.id === selectedProjectId)) {
+      setSelectedProjectId('all')
+    }
+  }, [projects, selectedProjectId])
+  const filteredEvents = selectedProjectId === 'all' ? events : eventsByProject[selectedProjectId] ?? []
   const [toolStats, setToolStats] = useState<Record<string, ToolStat>>({})
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -156,7 +168,8 @@ export function StatsPanel(): React.ReactElement {
     let cancelled = false
     ;(async () => {
       const acc: Record<string, ToolStat> = {}
-      const results = await Promise.allSettled(sessions.map((s) => window.electronAPI.readTrace(s.projectId, s.id)))
+      const scoped = sessions.filter((s) => selectedProjectId === 'all' || s.projectId === selectedProjectId)
+      const results = await Promise.allSettled(scoped.map((s) => window.electronAPI.readTrace(s.projectId, s.id)))
       for (const r of results) {
         if (r.status !== 'fulfilled') continue // skip a failed session, keep the rest
         for (const ev of (r.value.data || []) as Array<{
@@ -181,7 +194,7 @@ export function StatsPanel(): React.ReactElement {
     return () => {
       cancelled = true
     }
-  }, [sessions])
+  }, [sessions, selectedProjectId])
 
   const summary = useMemo(() => {
     const modelStats: Record<string, ModelStat> = {}
@@ -195,7 +208,7 @@ export function StatsPanel(): React.ReactElement {
     let nonApiCount = 0
     let totalCost = 0
     let unpricedTokens = 0
-    for (const e of events) {
+    for (const e of filteredEvents) {
       const mid = e.modelConfigId ?? 'unknown'
       if (!modelStats[mid]) modelStats[mid] = { count: 0, input: 0, output: 0, totalMs: 0, cost: 0, priced: false }
       modelStats[mid].count++
@@ -236,7 +249,7 @@ export function StatsPanel(): React.ReactElement {
     }
     durations.sort((a, b) => a - b)
     return {
-      turns: events.length,
+      turns: filteredEvents.length,
       totalInput,
       totalOutput,
       totalTools,
@@ -252,7 +265,7 @@ export function StatsPanel(): React.ReactElement {
       p95: percentile(durations, 0.95),
       p99: percentile(durations, 0.99)
     }
-  }, [events, models, pricingTable])
+  }, [filteredEvents, models, pricingTable])
 
   const updatePricing = (model: string, field: keyof ModelPricing, raw: number): void => {
     // Normalize at the data layer (the input's min=0 is a UX hint, not a guarantee)
@@ -269,8 +282,8 @@ export function StatsPanel(): React.ReactElement {
   // Token trend: buckets adapt granularity to the range (today→hourly, else daily)
   // and render as a smoothed curve with a gradient fill.
   const buckets = useMemo(
-    () => bucketEvents(events, range, customStart, customEnd),
-    [events, range, customStart, customEnd]
+    () => bucketEvents(filteredEvents, range, customStart, customEnd),
+    [filteredEvents, range, customStart, customEnd]
   )
   const maxBucket = Math.max(1, ...buckets.map((b) => b.tokens))
   const totalInRange = buckets.reduce((s, b) => s + b.tokens, 0)
@@ -318,6 +331,25 @@ export function StatsPanel(): React.ReactElement {
 
   return (
     <div className="space-y-4">
+      {/* Project filter */}
+      <div className="flex items-center gap-2">
+        <span className="label-tag">项目</span>
+        <select
+          value={selectedProjectId}
+          onChange={(e) => setSelectedProjectId(e.target.value)}
+          className="field max-w-xs py-0.5 font-mono text-[11px]"
+        >
+          <option value="all">全部</option>
+          {[...projects]
+            .sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name))
+            .map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name + (p.isDefault ? '（默认）' : '')}
+              </option>
+            ))}
+        </select>
+      </div>
+
       {/* Overview */}
       <div className="grid grid-cols-2 gap-3">
         {card('总 TOKEN', ((summary.totalInput + summary.totalOutput) / 1000).toFixed(1) + 'k', `↑${summary.totalInput} · ↓${summary.totalOutput}`)}
