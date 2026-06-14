@@ -4,6 +4,7 @@
 > **依据**：本地 Claude Code 知识库（`D:\study\KnowledgeBase`）+ Codex 联网调研。两者模型高度收敛。
 > **日期**：2026-06-13 · 性质：实现设计（可据此落地）
 > **v2 修订**：① 统计拆为项目级（不再全局单文件）；② 砍掉目录文件记忆（AGENTS.md/MILO.md），项目记忆改用「项目级 systemPrompt」。
+> **v3 核对（2026-06-14）**：项目级功能已落地。其中 §0决策2（默认项目现绑定 `<workspace>/default` 真实目录，非 dirPath=null）与 §6（allowlist 实为「全局=模式／规则=会话+项目」，无全局 rules 档）已被实现调整，详见 `2026-06-14-desktop-agent-项目级实现核对.md`。
 
 ---
 
