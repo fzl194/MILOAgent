@@ -436,7 +436,7 @@ ipcMain.handle('session:writeMessages', async (_, sid: string, msgs: unknown[]) 
 })
 ipcMain.handle('session:deleteMessages', async (_, sid: string) => {
   try { await unlink(join(SESSIONS_DIR(), sid + '.json')); return { success: true } }
-  catch (e: any) { return { success: false, error: e.message } }
+  catch (e: any) { return { success: e?.code === 'ENOENT' } }
 })
 
 // ===== Stats (per-project: projects/<pid>/stats/events.jsonl) =====

@@ -122,16 +122,20 @@ export function dropOldestBlock(messages: Message[]): Message[] {
 /** Claude-Code Tier 1 (micro-compaction): replace OLD tool *results* with a
  *  placeholder, but keep the tool_call (so the model still knows it read that
  *  file / ran that command and can re-invoke if needed). Protects the most
- *  recent `keep` tool results. Zero LLM cost — runs on every request. */
-/** Placeholder substituted for elided tool results. */
+ *  recent `keep` tool results. Zero LLM cost.
+ *
+ *  Cache-aware: only runs when fillRatio > threshold (NOT every request). Running
+ *  every turn mutates mid-array content → invalidates prefix cache even for short
+ *  conversations. By deferring to a fill threshold, short conversations keep
+ *  their cache intact; long conversations still get trimmed before overflow. */
 const ELIDED_TOOL_RESULT = '[旧工具结果已折叠 · old tool result elided by context trimming]'
 
 export class ToolResultTrimCompactor implements Compactor {
   readonly name = 'tool-result-trim'
-  constructor(private keep = 6) {}
+  constructor(private keep = 10, private fillThreshold = 0.5) {}
 
-  shouldRun(): boolean {
-    return true // cheap and high-value; always run
+  shouldRun(metrics: ContextMetrics): boolean {
+    return metrics.fillRatio > this.fillThreshold
   }
 
   run(view: Message[]): Message[] {

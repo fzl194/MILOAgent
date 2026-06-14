@@ -115,11 +115,11 @@ describe('TokenBudgetBackstop', () => {
 describe('DefaultContextStrategy.toView', () => {
   it('applies tool-result elision while keeping tool_call declarations', () => {
     const s = new DefaultContextStrategy({
-      contextWindow: 1_000_000,
+      contextWindow: 800, // small enough that 4×100-word tool results push fillRatio > 0.5
       maxMessages: 1000,
       keepRecentToolResults: 2
     })
-    const big = 'Z'.repeat(100) // longer than the elision placeholder
+    const big = 'word '.repeat(100) // 100 words → ~100 tokens; longer than the elision placeholder
     const full = [asstTC(['a', 'b', 'c', 'd']), tool('a', big), tool('b', big), tool('c', big), tool('d', big)]
     const view = s.toView(full)
     expect(view[0].toolCalls?.length).toBe(4)

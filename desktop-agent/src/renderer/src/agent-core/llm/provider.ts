@@ -79,7 +79,8 @@ export class LLMProvider {
         pendingUsage = {
           inputTokens: chunk.usage.prompt_tokens ?? 0,
           outputTokens: chunk.usage.completion_tokens ?? 0,
-          totalTokens: chunk.usage.total_tokens
+          totalTokens: chunk.usage.total_tokens,
+          cachedTokens: (chunk.usage as any)?.prompt_tokens_details?.cached_tokens
         }
       }
 

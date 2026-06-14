@@ -161,6 +161,8 @@ export interface UsageStats {
   inputTokens: number
   outputTokens: number
   totalTokens?: number
+  /** Prefix-cache hit tokens (OpenAI: prompt_tokens_details.cached_tokens). */
+  cachedTokens?: number
 }
 
 // Shape of the `done` stream event data emitted by LLMProvider / AgentLoop

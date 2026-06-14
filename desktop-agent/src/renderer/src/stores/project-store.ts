@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import type { Project, ProjectConfig } from '../agent-core/types'
+import { useSessionStore } from './session-store'
+import { useStatsStore } from './stats-store'
 
 // Project-level management. A Project is a named record pointing at a working
 // directory (dirPath); the directory path is the project's logical identity
@@ -206,18 +208,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   remove: async (id) => {
     const target = get().projects.find((p) => p.id === id)
     if (!target || target.isDefault) return // never delete the default project
+    // Cascade-clean this project's sessions (messages + permission rules + index
+    // records) so they don't become invisible orphans. trace/stats are wiped by
+    // project:delete's whole-bucket rm below.
+    await useSessionStore.getState().deleteSessionsByProject(id)
+    // Delete the project's data bucket (traces + stats) in one recursive rm.
+    await window.electronAPI.deleteProject(id)
     set((st) => {
       const projects = st.projects.filter((p) => p.id !== id)
       const activeProjectId =
         st.activeProjectId === id ? projects.find((p) => p.isDefault)?.id ?? projects[0]?.id ?? null : st.activeProjectId
       return { projects, activeProjectId }
     })
-    // P5: also delete the project's data bucket (traces + stats).
-    await window.electronAPI.deleteProject(id)
     await get().persist()
-    // NOTE: P1 keeps session/trace/stats files sid-keyed globally, so deleting a
-    // project does not yet remove its sessions' files. Project-scoped cleanup
-    // (and orphan removal) lands when storage moves under projects/<id>/.
+    // Re-align the chat panel to the now-active project (same path the Sidebar
+    // takes on project switch) and refresh stats so the panel doesn't keep the
+    // deleted project's numbers.
+    const newPid = get().activeProjectId
+    if (newPid) await useSessionStore.getState().ensureActiveSessionInProject(newPid)
+    await useStatsStore.getState().loadStats()
   },
 
   getDefault: () => get().projects.find((p) => p.isDefault),

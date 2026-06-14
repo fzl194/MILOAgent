@@ -494,16 +494,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (d.finishReason !== 'tool_calls') {
               set({ isStreaming: false, lastToolCallCount: toolCallCount })
 
-              // Generate a concise title in the background (first turn only). Delay
-              // a few seconds so the title-gen request doesn't evict the main
-              // conversation's prefix cache on the API side (separate system prompt
-              // → different cache key → LRU eviction risk).
+              // Generate a concise title (first turn only) — fire-and-forget. Uses
+              // a separate system prompt, so it can never share the main conversation's
+              // prefix cache; the extra request is small (maxTokens 2048).
               if (session && session.title === '新会话') {
-                window.setTimeout(() => {
-                  void generateTitle(modelConfig, text, d.textContent).then((title) =>
-                    sessionStore.renameSession(session.id, title)
-                  )
-                }, 4000)
+                void generateTitle(modelConfig, text, d.textContent).then((title) =>
+                  sessionStore.renameSession(session.id, title)
+                )
               }
 
               await sessionStore.saveCurrentMessages()

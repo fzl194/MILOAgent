@@ -13,6 +13,7 @@ interface SessionState {
   createSession: (title: string, modelConfigId: string) => Promise<Session>
   switchSession: (id: string) => Promise<void>
   deleteSession: (id: string) => Promise<void>
+  deleteSessionsByProject: (projectId: string) => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
   updateSessionModel: (id: string, modelConfigId: string) => Promise<void>
   ensureActiveSessionInProject: (projectId: string) => Promise<void>
@@ -99,6 +100,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     })
     await get().persistIndex()
     await useStatsStore.getState().loadStats()
+  },
+
+  // Bulk-delete every session belonging to a project (messages + permission
+  // rules + index records). Used by project deletion so a project's sessions
+  // don't become invisible orphans. trace/stats are NOT touched here — main's
+  // project:delete wipes the whole projects/<pid>/ bucket (all traces + stats)
+  // as a single recursive rm. If the active session belonged to the doomed
+  // project it is cleared here; the caller re-aligns it via
+  // ensureActiveSessionInProject after switching the active project.
+  deleteSessionsByProject: async (projectId) => {
+    const { sessions, activeSessionId } = get()
+    const doomed = sessions.filter((s) => s.projectId === projectId)
+    if (!doomed.length) return
+    for (const s of doomed) {
+      await window.electronAPI.deleteSessionMessages(s.id)
+      await window.electronAPI.deleteSessionRules(s.id)
+    }
+    const remaining = sessions.filter((s) => s.projectId !== projectId)
+    const activeStillValid = remaining.some((s) => s.id === activeSessionId)
+    set({
+      sessions: remaining,
+      activeSessionId: activeStillValid ? activeSessionId : null,
+      currentMessages: activeStillValid ? get().currentMessages : []
+    })
+    await get().persistIndex()
   },
 
   renameSession: async (id, title) => {
