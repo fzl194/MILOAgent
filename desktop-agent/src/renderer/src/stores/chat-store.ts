@@ -11,6 +11,7 @@ import type {
 } from '../agent-core/types'
 import { AgentLoop, type LoopDoneEvent, type AgentSafety } from '../agent-core/agent/loop'
 import { DefaultContextStrategy, DEFAULT_CONTEXT_WINDOW } from '../agent-core/agent/context-strategy'
+import { LLMProvider } from '../agent-core/llm/provider'
 import { ElectronToolExecutor } from '../adapters/electron-tool-executor'
 import { useSessionStore } from './session-store'
 import { useModelStore } from './model-store'
@@ -461,12 +462,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (d.finishReason !== 'tool_calls') {
               set({ isStreaming: false, lastToolCallCount: toolCallCount })
 
-              // Title from the first user message (truncation, no LLM call).
-              // Previously used an LLM call which couldn't share the main conversation's
-              // prefix cache and wasted tokens — truncation is free and instant.
+              // Title generation: append a title request to the SAME message prefix
+              // the main turn used → API prefix cache hit (identical prefix, only the
+              // last user message is new). Near-zero cost vs a separate call with a
+              // different system prompt (which would always miss the cache).
               if (session && session.title === '新会话') {
-                const title = text.slice(0, 20).replace(/\n/g, ' ').trim() + (text.length > 20 ? '…' : '')
-                await sessionStore.renameSession(session.id, title)
+                void (async () => {
+                  try {
+                    const provider = new LLMProvider({
+                      apiKey: modelConfig.apiKey,
+                      baseUrl: modelConfig.baseUrl,
+                      model: modelConfig.model
+                    })
+                    // Rebuild the exact prefix the main turn sent, then append the title request.
+                    const msgs = [
+                      { role: 'system' as const, content: turnConfig.systemPrompt },
+                      ...useSessionStore.getState().currentMessages
+                        .filter((m) => m.role !== 'system')
+                        .map((m) => ({ role: m.role as 'user' | 'assistant' | 'tool', content: m.content })),
+                      { role: 'user' as const, content: '请用一句话概括本次对话主题作为会话标题（不超过15字，纯文本，不要标点、引号、换行）。直接输出标题。' }
+                    ]
+                    let title = ''
+                    for await (const ev of provider.chat(msgs)) {
+                      if (ev.type === 'text_delta') title += ev.data as string
+                    }
+                    title = title.trim().replace(/["'""''「」【】\n]/g, '').slice(0, 20)
+                    if (title) await useSessionStore.getState().renameSession(session.id, title)
+                  } catch {
+                    // Fallback: truncation (no extra cost).
+                    const fallback = text.slice(0, 20).replace(/\n/g, ' ').trim()
+                    await useSessionStore.getState().renameSession(session.id, fallback)
+                  }
+                })()
               }
 
               await sessionStore.saveCurrentMessages()

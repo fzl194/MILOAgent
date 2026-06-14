@@ -247,7 +247,7 @@ export class DefaultContextStrategy implements ContextStrategy {
     // even when tokens are fine. The class stays exported for opt-in use.
     // (maxToolRounds — a separate, orthogonal agent-LOOP bound — lives in loop.ts.)
     this.compactors = [
-      new ToolResultTrimCompactor(opts.keepRecentToolResults ?? 6),
+      new ToolResultTrimCompactor(opts.keepRecentToolResults ?? 10),
       new TokenBudgetBackstop(opts.budgetRatio ?? 0.8)
     ]
   }
