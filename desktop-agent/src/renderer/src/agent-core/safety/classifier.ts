@@ -50,12 +50,23 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** Remember-pattern for write_file: the file's DIRECTORY as an anchored prefix,
- *  so approving one write auto-runs sibling writes (Claude Code Write(dir/**)
- *  style). Bare filenames (no directory) fall back to exact — never broaden to
- *  the root. */
-function writeFilePattern(path: string): string {
+/** Remember-pattern for write_file. When `root` (the project dir, ctx.cwd)
+ *  is known and the file lives inside it, anchor on the ROOT so a single
+ *  approval covers the whole project tree — otherwise the user must re-approve
+ *  every subdirectory. This matches the Claude Code Write(dir/**) model with
+ *  dir = project root. Falls back to the file's own directory when there is no
+ *  root or the file is outside it; bare filenames (no directory) match exactly
+ *  — never broaden a lone filename to the filesystem root. */
+function writeFilePattern(path: string, root?: string): string {
   const norm = normalizePath(path)
+  if (root) {
+    // normalizePath collapses a lone '/' to '' (trailing-slash strip), so a
+    // truthy `r` doubles as the guard against broadening to the filesystem root.
+    const r = normalizePath(root)
+    if (r && isInsideWorkspace(norm, r)) {
+      return '^' + escapeRegex(r) + '/'
+    }
+  }
   const slash = norm.lastIndexOf('/')
   if (slash > 0) return '^' + escapeRegex(norm.slice(0, slash)) + '/'
   return '^' + escapeRegex(norm) + '$'
@@ -179,7 +190,7 @@ export function classify(
       // (consistent with dangerous run_shell: these must always ask).
       return { level: 'dangerous', reason: `写入工作区根之外：${path}`, patterns: [] }
     }
-    return { level: 'write', reason: `写入文件：${path}`, patterns: [writeFilePattern(path)] }
+    return { level: 'write', reason: `写入文件：${path}`, patterns: [writeFilePattern(path, ctx.cwd)] }
   }
 
   if (name === 'run_shell') {

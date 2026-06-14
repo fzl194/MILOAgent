@@ -215,12 +215,26 @@ describe('classify · remember-patterns (Claude-Code-style prefixes)', () => {
   const toEntries = (patterns: string[], name: string): AllowlistEntry[] =>
     patterns.map((pattern) => ({ pattern, name, scope: 'global', createdAt: 0 }))
 
-  it('write_file remembers by directory prefix (siblings auto-run)', () => {
+  it('write_file falls back to its directory prefix when no cwd is set', () => {
+    // WS has no cwd, so the pattern anchors on the file's own directory.
     const a = classify('write_file', { path: '/repo/sub/a.txt', content: '' }, WS)
     const entries = toEntries(a.patterns, 'write_file')
     expect(allowlistAllows(entries, 'write_file', { path: '/repo/sub/b.txt', content: '' })).toBe(true)
     expect(allowlistAllows(entries, 'write_file', { path: '/repo/sub/nested/c.txt', content: '' })).toBe(true)
     expect(allowlistAllows(entries, 'write_file', { path: '/repo/other/d.txt', content: '' })).toBe(false)
+  })
+
+  it('write_file anchors on the project root (cwd) so any subdir is covered', () => {
+    // Regression for "must re-approve every subdirectory": with a project dir
+    // (cwd) set, one approval must cover the whole project tree, not just the
+    // file's immediate parent directory.
+    const ctx = { sandbox: 'workspace-write' as const, workspaceRoot: '/proj', cwd: '/proj' }
+    const a = classify('write_file', { path: '/proj/src/sub/a.txt', content: '' }, ctx)
+    expect(a.patterns).toEqual(['^/proj/']) // anchored on the root, not /proj/src/sub
+    const entries = toEntries(a.patterns, 'write_file')
+    expect(allowlistAllows(entries, 'write_file', { path: '/proj/src/sub/b.txt', content: '' })).toBe(true)
+    expect(allowlistAllows(entries, 'write_file', { path: '/proj/docs/nested/c.txt', content: '' })).toBe(true) // different top-level subdir — the bug
+    expect(allowlistAllows(entries, 'write_file', { path: '/outside/d.txt', content: '' })).toBe(false) // outside project still not covered
   })
 
   it('run_shell remembers by base command prefix', () => {
