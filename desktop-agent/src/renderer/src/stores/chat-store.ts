@@ -202,6 +202,7 @@ function buildSafety(turnId: string, workspaceOverride?: string, cwd?: string): 
 interface ChatState {
   isStreaming: boolean
   currentText: string
+  currentReasoning: string
   lastToolCallCount: number
   pendingApprovals: ApprovalRequest[]
   abortController: AbortController | null
@@ -213,7 +214,7 @@ interface ChatState {
 
 export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
-  currentText: '',
+  currentText: '', currentReasoning: '',
   lastToolCallCount: 0,
   pendingApprovals: [],
   abortController: null,
@@ -261,7 +262,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     sessionStore.addMessage(userMsg)
 
     const controller = new AbortController()
-    set({ isStreaming: true, currentText: '', lastToolCallCount: 0, abortController: controller })
+    set({ isStreaming: true, currentText: '', currentReasoning: '', lastToolCallCount: 0, abortController: controller })
 
     const session = sessionStore.sessions.find((s) => s.id === sessionId)
     const projectId = session?.projectId ?? useProjectStore.getState().activeProjectId ?? ''
@@ -273,7 +274,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (!modelConfig || !modelConfig.apiKey) {
       sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: '请先在管理面板中配置模型 API Key。', timestamp: Date.now() })
-      set({ isStreaming: false, currentText: '', abortController: null })
+      set({ isStreaming: false, currentText: '', currentReasoning: '', abortController: null })
       await sessionStore.saveCurrentMessages()
       return
     }
@@ -349,6 +350,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         switch (event.type) {
           case 'text_delta':
             set((s) => ({ currentText: s.currentText + (event.data as string) }))
+            break
+          case 'reasoning_delta':
+            set((s) => ({ currentReasoning: s.currentReasoning + (event.data as string) }))
             break
           case 'tool_call_start':
             toolCallCount++
@@ -482,7 +486,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             })
 
             // Streaming text is now mirrored into messages; clear the live buffer
-            set({ currentText: '' })
+            set({ currentText: '', currentReasoning: '' })
 
             // Only the final (non-tool_calls) round finishes the turn
             if (d.finishReason !== 'tool_calls') {
@@ -529,17 +533,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (partial.trim()) {
           sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: partial, timestamp: Date.now() })
         }
-        set({ isStreaming: false, currentText: '', abortController: null })
+        set({ isStreaming: false, currentText: '', currentReasoning: '', abortController: null })
         await sessionStore.saveCurrentMessages()
       }
     } catch (err: any) {
       if (!controller.signal.aborted) {
         sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `意外错误: ${err.message}`, isError: true, timestamp: Date.now() })
       }
-      set({ isStreaming: false, currentText: '', abortController: null })
+      set({ isStreaming: false, currentText: '', currentReasoning: '', abortController: null })
       await sessionStore.saveCurrentMessages()
     }
   },
 
-  clearCurrent: () => set({ currentText: '', isStreaming: false })
+  clearCurrent: () => set({ currentText: '', currentReasoning: '', isStreaming: false })
 }))

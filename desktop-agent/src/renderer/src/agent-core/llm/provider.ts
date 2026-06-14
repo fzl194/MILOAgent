@@ -93,6 +93,12 @@ export class LLMProvider {
         yield { type: 'text_delta', data: delta.content }
       }
 
+      // Reasoning models (GLM, DeepSeek-R1, etc.) send thinking tokens separately.
+      const reasoning = (delta as any)?.reasoning_content || (delta as any)?.reasoning
+      if (reasoning) {
+        yield { type: 'reasoning_delta', data: reasoning }
+      }
+
       if (delta?.tool_calls) {
         for (const tc of delta.tool_calls) {
           const idx = tc.index ?? 0

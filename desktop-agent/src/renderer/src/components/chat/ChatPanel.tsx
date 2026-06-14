@@ -8,7 +8,7 @@ import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
 
 export function ChatPanel(): React.ReactElement {
-  const { currentText, isStreaming, sendMessage, stop } = useChatStore()
+  const { currentText, currentReasoning, isStreaming, sendMessage, stop } = useChatStore()
   const { sessions, activeSessionId, currentMessages, updateSessionModel } = useSessionStore()
   const models = useModelStore((s) => s.models)
   const [showModelMenu, setShowModelMenu] = useState(false)
@@ -109,7 +109,7 @@ export function ChatPanel(): React.ReactElement {
         </div>
       </div>
 
-      <MessageList messages={currentMessages} currentText={currentText} isStreaming={isStreaming} />
+      <MessageList messages={currentMessages} currentText={currentText} currentReasoning={currentReasoning} isStreaming={isStreaming} />
       <ChatInput onSend={sendMessage} onStop={stop} disabled={isStreaming} />
     </div>
   )

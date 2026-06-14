@@ -9,6 +9,7 @@ import { Markdown } from './Markdown'
 interface MessageListProps {
   messages: Message[]
   currentText: string
+  currentReasoning: string
   isStreaming: boolean
 }
 
@@ -80,7 +81,7 @@ function Hero(): React.ReactElement {
   )
 }
 
-export function MessageList({ messages, currentText, isStreaming }: MessageListProps): React.ReactElement {
+export function MessageList({ messages, currentText, currentReasoning, isStreaming }: MessageListProps): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   // A tool call is mid-flight → its card already shows "调用中" inline, so the
   // generic thinking indicator is suppressed (only show it when the model is
@@ -98,7 +99,7 @@ export function MessageList({ messages, currentText, isStreaming }: MessageListP
       el.scrollTop = el.scrollHeight
     })
     return () => cancelAnimationFrame(id)
-  }, [messages, currentText])
+  }, [messages, currentText, currentReasoning])
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto overscroll-contain">
@@ -133,9 +134,26 @@ export function MessageList({ messages, currentText, isStreaming }: MessageListP
           return out
         })()}
 
+        {isStreaming && currentReasoning && (
+          <div className="flex justify-start rise">
+            <div className="flex max-w-[85%] gap-2.5">
+              <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold text-on-accent" style={avatarStyle}>
+                ◆
+              </div>
+              <div className="min-w-0">
+                <div className="label-tag mb-1">💭 思考过程</div>
+                <div className="max-h-[300px] overflow-y-auto whitespace-pre-wrap break-words rounded-2xl rounded-tl-sm border border-line/50 bg-panel/40 px-4 py-3 text-sm leading-relaxed text-faint shadow-lg backdrop-blur-sm">
+                  {currentReasoning}
+                  <span className="cursor-blink text-accent">▍</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {isStreaming && currentText && <StreamingPreview text={currentText} />}
 
-        {isStreaming && !currentText && !anyToolRunning && <StreamingIndicator />}
+        {isStreaming && !currentText && !currentReasoning && !anyToolRunning && <StreamingIndicator />}
 
         <ApprovalCard />
       </div>

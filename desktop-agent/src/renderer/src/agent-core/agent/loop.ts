@@ -138,7 +138,7 @@ export class AgentLoop {
         const stream = this.provider.chat(requestMessages, ALL_TOOLS, this.signal)
 
         for await (const event of stream) {
-          if (event.type === 'text_delta') {
+          if (event.type === 'text_delta' || event.type === 'reasoning_delta') {
             yield event // passthrough to UI
           } else if (event.type === 'tool_call_end') {
             // Surface to UI as an active tool call (keeps existing UI behaviour)

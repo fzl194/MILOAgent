@@ -127,6 +127,7 @@ export interface AllowlistEntry {
 // ===== Streaming Events =====
 export type StreamEventType =
   | 'text_delta'
+  | 'reasoning_delta'
   | 'tool_call_start'
   | 'tool_call_delta'
   | 'tool_call_end'
