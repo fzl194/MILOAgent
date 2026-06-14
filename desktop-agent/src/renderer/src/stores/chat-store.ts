@@ -138,6 +138,10 @@ function buildSafety(turnId: string, effective: EffectiveConfig): AgentSafety {
 
 interface ChatState {
   isStreaming: boolean
+  /** The session the in-flight turn belongs to. Null when no turn is running.
+   *  Decouples streaming from the viewed session so switching mid-turn doesn't
+   *  tear the turn's messages into the wrong session. */
+  streamingSessionId: string | null
   currentText: string
   currentReasoning: string
   lastToolCallCount: number
@@ -151,6 +155,7 @@ interface ChatState {
 
 export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
+  streamingSessionId: null,
   currentText: '', currentReasoning: '',
   lastToolCallCount: 0,
   pendingApprovals: [],
@@ -175,9 +180,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Finalize any tool calls still mid-flight so their cards don't hang in the
     // "calling…" state after the user stops.
     const ss = useSessionStore.getState()
-    for (const m of ss.currentMessages) {
+    const stopSid = get().streamingSessionId
+    const stopMsgs = stopSid ? (ss.messagesBySession[stopSid] ?? []) : ss.currentMessages
+    for (const m of stopMsgs) {
       if (m.role === 'tool' && m.status === 'running' && m.toolCallId) {
-        ss.updateToolMessage(m.toolCallId, { status: 'failed', isError: true, content: m.content || '已停止' })
+        ss.updateToolMessage(m.toolCallId, { status: 'failed', isError: true, content: m.content || '已停止' }, stopSid ?? undefined)
       }
     }
     set({ pendingApprovals: [] })
@@ -196,10 +203,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const sessionId = sessionStore.activeSessionId
     const userMsg: Message = { id: crypto.randomUUID(), role: 'user', content: text, timestamp: Date.now() }
-    sessionStore.addMessage(userMsg)
+    sessionStore.addMessage(userMsg, sessionId)
 
     const controller = new AbortController()
-    set({ isStreaming: true, currentText: '', currentReasoning: '', lastToolCallCount: 0, abortController: controller })
+    set({ isStreaming: true, streamingSessionId: sessionId, currentText: '', currentReasoning: '', lastToolCallCount: 0, abortController: controller })
 
     const session = sessionStore.sessions.find((s) => s.id === sessionId)
     const projectId = session?.projectId ?? useProjectStore.getState().activeProjectId ?? ''
@@ -210,9 +217,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!modelConfig) modelConfig = modelStore.getDefaultModel()
 
     if (!modelConfig || !modelConfig.apiKey) {
-      sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: '请先在管理面板中配置模型 API Key。', timestamp: Date.now() })
-      set({ isStreaming: false, currentText: '', currentReasoning: '', abortController: null })
-      await sessionStore.saveCurrentMessages()
+      sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: '请先在管理面板中配置模型 API Key。', timestamp: Date.now() }, sessionId)
+      set({ isStreaming: false, streamingSessionId: null, currentText: '', currentReasoning: '', abortController: null })
+      await sessionStore.saveCurrentMessages(sessionId)
       return
     }
 
@@ -225,6 +232,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       approvalPolicy: effective.approvalPolicy
     }
     const turnId = crypto.randomUUID()
+    // Wrap initialization (trace-meta read/append + loop construction) AND the
+    // loop in one try — a throw here used to bypass the catch and leave
+    // isStreaming/streamingSessionId stuck on. The catch finalizes any path.
+    try {
 
     // Ensure a session_meta row exists (written once per session)
     if (!sessionMetaWritten.has(sessionId)) {
@@ -247,7 +258,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Exclude the user message just added above — the loop adds it itself.
     // Filter by id (not positional slice) so an abnormal prior state can't drop
     // a trailing tool message and leave an orphan assistant(toolCalls) → API 400.
-    const history = sessionStore.currentMessages.filter((m) => m.id !== userMsg.id)
+    const history = (useSessionStore.getState().messagesBySession[sessionId] ?? []).filter((m) => m.id !== userMsg.id)
     const turnStartedAt = Date.now()
     let toolCallCount = 0
     let lastCallId = ''
@@ -278,7 +289,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       contextStrategy
     )
 
-    try {
       for await (const event of loop.run(text, turnId)) {
         switch (event.type) {
           case 'text_delta':
@@ -297,14 +307,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // (matched by toolCallId); update it so the SAME card animates. Fall
             // back to append if no placeholder exists (defensive).
             const status: Message['status'] = d.isError ? 'failed' : 'success'
-            // Read currentMessages FRESH from the store — the `sessionStore`
-            // captured at turn start holds a stale snapshot that doesn't include
-            // the placeholders added this turn, so a stale read would miss the
-            // placeholder, fall back to addMessage, and create a duplicate
-            // (running + failed) card for the same call.
-            const existing = useSessionStore
-              .getState()
-              .currentMessages.find((m) => m.role === 'tool' && m.toolCallId === d.toolCallId)
+            // Read the TURN's session cache FRESH — not the viewed session's
+            // pointer — so placeholders added this turn are found even if the
+            // user switched sessions mid-turn.
+            const existing = (useSessionStore.getState().messagesBySession[sessionId] ?? [])
+              .find((m) => m.role === 'tool' && m.toolCallId === d.toolCallId)
             if (existing) {
               sessionStore.updateToolMessage(d.toolCallId, {
                 content: d.result,
@@ -314,7 +321,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 durationMs: d.durationMs,
                 riskLevel: d.riskLevel,
                 status
-              })
+              }, sessionId)
             } else {
               sessionStore.addMessage({
                 id: crypto.randomUUID(),
@@ -328,7 +335,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 riskLevel: d.riskLevel,
                 status,
                 timestamp: Date.now()
-              })
+              }, sessionId)
             }
             // Persist the atomic tool_call event
             await safeAppendTrace(projectId, sessionId,{
@@ -365,7 +372,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const reasoningSnapshot = get().currentReasoning
             for (const m of d.appendedMessages) {
               if (m.role === 'assistant') {
-                sessionStore.addMessage({ ...m, modelConfigId: modelConfig.id, reasoning: reasoningSnapshot || undefined })
+                sessionStore.addMessage({ ...m, modelConfigId: modelConfig.id, reasoning: reasoningSnapshot || undefined }, sessionId)
               }
             }
 
@@ -390,7 +397,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   toolArgs: parsedArgs,
                   status: 'running',
                   timestamp: Date.now()
-                })
+                }, sessionId)
               }
             }
 
@@ -425,7 +432,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
             // Only the final (non-tool_calls) round finishes the turn
             if (d.finishReason !== 'tool_calls') {
-              set({ isStreaming: false, lastToolCallCount: toolCallCount })
+              set({ isStreaming: false, streamingSessionId: null, lastToolCallCount: toolCallCount })
 
               // Title generation: append a title request to the SAME message prefix
               // the main turn used → API prefix cache hit (identical prefix, only the
@@ -442,7 +449,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     // Rebuild the exact prefix the main turn sent, then append the title request.
                     const msgs = [
                       { role: 'system' as const, content: turnConfig.systemPrompt },
-                      ...useSessionStore.getState().currentMessages
+                      ...(useSessionStore.getState().messagesBySession[sessionId] ?? [])
                         .filter((m) => m.role !== 'system')
                         .map((m) => ({ role: m.role as 'user' | 'assistant' | 'tool', content: m.content })),
                       { role: 'user' as const, content: '请用一句话概括本次对话主题作为会话标题（不超过15字，纯文本，不要标点、引号、换行）。直接输出标题。' }
@@ -464,7 +471,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 })()
               }
 
-              await sessionStore.saveCurrentMessages()
+              await sessionStore.saveCurrentMessages(sessionId)
               await useStatsStore.getState().recordEvent(projectId, {
                 id: crypto.randomUUID(),
                 sessionId,
@@ -482,9 +489,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break
           }
           case 'error': {
-            sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `错误: ${event.data}`, isError: true, timestamp: Date.now() })
-            set({ isStreaming: false })
-            await sessionStore.saveCurrentMessages()
+            sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `错误: ${event.data}`, isError: true, timestamp: Date.now() }, sessionId)
+            set({ isStreaming: false, streamingSessionId: null })
+            await sessionStore.saveCurrentMessages(sessionId)
             break
           }
         }
@@ -502,19 +509,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
             content: partial,
             reasoning: reasoning || undefined,
             timestamp: Date.now()
-          })
+          }, sessionId)
         }
-        set({ isStreaming: false, currentText: '', currentReasoning: '', abortController: null })
-        await sessionStore.saveCurrentMessages()
+        set({ isStreaming: false, streamingSessionId: null, currentText: '', currentReasoning: '', abortController: null })
+        await sessionStore.saveCurrentMessages(sessionId)
       }
     } catch (err: any) {
       if (!controller.signal.aborted) {
-        sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `意外错误: ${err.message}`, isError: true, timestamp: Date.now() })
+        sessionStore.addMessage({ id: crypto.randomUUID(), role: 'assistant', content: `意外错误: ${err.message}`, isError: true, timestamp: Date.now() }, sessionId)
       }
-      set({ isStreaming: false, currentText: '', currentReasoning: '', abortController: null })
-      await sessionStore.saveCurrentMessages()
+      set({ isStreaming: false, streamingSessionId: null, currentText: '', currentReasoning: '', abortController: null })
+      await sessionStore.saveCurrentMessages(sessionId)
     }
   },
 
-  clearCurrent: () => set({ currentText: '', currentReasoning: '', isStreaming: false })
+  clearCurrent: () => set({ currentText: '', currentReasoning: '', isStreaming: false, streamingSessionId: null, abortController: null })
 }))

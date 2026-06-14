@@ -8,8 +8,13 @@ import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
 
 export function ChatPanel(): React.ReactElement {
-  const { currentText, currentReasoning, isStreaming, sendMessage, stop } = useChatStore()
+  const { currentText, currentReasoning, isStreaming, streamingSessionId, sendMessage, stop } = useChatStore()
   const { sessions, activeSessionId, currentMessages, updateSessionModel } = useSessionStore()
+  // Only show this turn's streaming preview when viewing the session it belongs
+  // to — switching away must not leak another session's live text/reasoning,
+  // and switching back resumes the preview (the turn kept appending to its own
+  // session cache the whole time).
+  const viewingStreaming = isStreaming && streamingSessionId === activeSessionId
   const models = useModelStore((s) => s.models)
   const [showModelMenu, setShowModelMenu] = useState(false)
 
@@ -109,7 +114,7 @@ export function ChatPanel(): React.ReactElement {
         </div>
       </div>
 
-      <MessageList messages={currentMessages} currentText={currentText} currentReasoning={currentReasoning} isStreaming={isStreaming} />
+      <MessageList messages={currentMessages} currentText={viewingStreaming ? currentText : ''} currentReasoning={viewingStreaming ? currentReasoning : ''} isStreaming={viewingStreaming} />
       <ChatInput onSend={sendMessage} onStop={stop} disabled={isStreaming} />
     </div>
   )

@@ -3,11 +3,17 @@ import type { Session, Message } from '../agent-core/types'
 import { useStatsStore } from './stats-store'
 import { useProjectStore } from './project-store'
 import { usePermissionStore } from './permission-store'
+import { useChatStore } from './chat-store'
 
 interface SessionState {
   sessions: Session[]
   activeSessionId: string | null
   currentMessages: Message[]
+  /** Per-session message cache (lazy-loaded on switch). The source of truth a
+   *  running turn reads/writes; `currentMessages` is only the display pointer at
+   *  messagesBySession[activeSessionId]. Writes target a specific session's cache
+   *  so a turn running in session A is untouched while the user views session B. */
+  messagesBySession: Record<string, Message[]>
   isLoaded: boolean
   loadSessions: () => Promise<void>
   createSession: (title: string, modelConfigId: string) => Promise<Session>
@@ -17,17 +23,23 @@ interface SessionState {
   renameSession: (id: string, title: string) => Promise<void>
   updateSessionModel: (id: string, modelConfigId: string) => Promise<void>
   ensureActiveSessionInProject: (projectId: string) => Promise<void>
-  setMessages: (msgs: Message[]) => void
-  addMessage: (msg: Message) => void
-  updateToolMessage: (toolCallId: string, patch: Partial<Message>) => void
-  saveCurrentMessages: () => Promise<void>
+  setMessages: (msgs: Message[], sid?: string) => void
+  addMessage: (msg: Message, sid?: string) => void
+  updateToolMessage: (toolCallId: string, patch: Partial<Message>, sid?: string) => void
+  saveCurrentMessages: (sid?: string) => Promise<void>
   persistIndex: () => Promise<void>
 }
+
+// Serialize switches by intent: clicking A then B before A's lazy load resolves
+// lets B win (higher token); A's late set is dropped so it can't clobber the
+// session the user actually wants to view.
+let switchToken = 0
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   currentMessages: [],
+  messagesBySession: {},
   isLoaded: false,
 
   loadSessions: async () => {
@@ -58,7 +70,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     if (!projectId) throw new Error('No active project to create the session in')
     const s: Session = { id: crypto.randomUUID(), title, modelConfigId, projectId, createdAt: Date.now(), updatedAt: Date.now(), messageCount: 0 }
-    set((st) => ({ sessions: [s, ...st.sessions], activeSessionId: s.id, currentMessages: [] }))
+    // Pre-seed an empty cache so the new session never hits the lazy-load path.
+    set((st) => ({ sessions: [s, ...st.sessions], messagesBySession: { ...st.messagesBySession, [s.id]: [] }, activeSessionId: s.id, currentMessages: [] }))
     await get().persistIndex()
     await window.electronAPI.writeSessionMessages(s.id, [])
     void usePermissionStore.getState().loadForSession(s.id)
@@ -66,14 +79,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   switchSession: async (id) => {
-    const prev = get().activeSessionId
-    if (prev) await get().saveCurrentMessages()
-    const res = await window.electronAPI.readSessionMessages(id)
-    set({ activeSessionId: id, currentMessages: (res.data as Message[]) || [] })
+    // Lazy-load this session's messages on first view. Switching is PURE VIEW:
+    // it does NOT save the previous session — its in-memory cache is preserved,
+    // and any turn running in it persists on its own completion. This is what
+    // decouples switching from in-flight turns (the cross-session bug fix).
+    const token = ++switchToken
+    if (!get().messagesBySession[id]) {
+      const res = await window.electronAPI.readSessionMessages(id)
+      if (token !== switchToken) return  // a newer switch superseded this one
+      set((st) => ({ messagesBySession: { ...st.messagesBySession, [id]: (res.data as Message[]) || [] } }))
+    }
+    if (token !== switchToken) return
+    set((st) => ({ activeSessionId: id, currentMessages: st.messagesBySession[id] ?? [] }))
     void usePermissionStore.getState().loadForSession(id)
   },
 
   deleteSession: async (id) => {
+    // If the doomed session is mid-turn, stop that turn first so it stops
+    // writing to a key we're about to delete.
+    if (id === useChatStore.getState().streamingSessionId) {
+      useChatStore.getState().stop()
+    }
     const wasActive = get().activeSessionId === id
     const deleted = get().sessions.find((s) => s.id === id)
     const projectOfDeleted = deleted?.projectId
@@ -83,44 +109,53 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await window.electronAPI.pruneStatsBySession(projectOfDeleted ?? '', id)
 
     const remaining = get().sessions.filter((s) => s.id !== id)
-    // When the deleted session was active, move to the next session IN THE SAME
-    // project (most recent), so the chat panel never jumps to another project.
+    // Drop the cache entry; move nextActive to the same project's most-recent,
+    // reading from cache (lazy-loading if needed) so currentMessages reflects it.
     const sameProject = projectOfDeleted
       ? remaining.filter((s) => s.projectId === projectOfDeleted).sort((a, b) => b.updatedAt - a.updatedAt)
       : remaining
     const nextActiveId = wasActive ? (sameProject[0]?.id ?? null) : null
-    const nextMessages: Message[] = nextActiveId
-      ? ((await window.electronAPI.readSessionMessages(nextActiveId)).data as Message[]) || []
-      : []
-
+    const cacheWithout = { ...get().messagesBySession }
+    delete cacheWithout[id]
+    if (nextActiveId && !cacheWithout[nextActiveId]) {
+      const res = await window.electronAPI.readSessionMessages(nextActiveId)
+      cacheWithout[nextActiveId] = (res.data as Message[]) || []
+    }
     set({
       sessions: remaining,
+      messagesBySession: cacheWithout,
       activeSessionId: wasActive ? nextActiveId : get().activeSessionId,
-      currentMessages: wasActive ? nextMessages : get().currentMessages
+      currentMessages: wasActive ? (nextActiveId ? cacheWithout[nextActiveId] ?? [] : []) : get().currentMessages
     })
     await get().persistIndex()
     await useStatsStore.getState().loadStats()
   },
 
   // Bulk-delete every session belonging to a project (messages + permission
-  // rules + index records). Used by project deletion so a project's sessions
-  // don't become invisible orphans. trace/stats are NOT touched here — main's
-  // project:delete wipes the whole projects/<pid>/ bucket (all traces + stats)
-  // as a single recursive rm. If the active session belonged to the doomed
-  // project it is cleared here; the caller re-aligns it via
-  // ensureActiveSessionInProject after switching the active project.
+  // rules + index records). Used by project deletion. trace/stats are wiped by
+  // main's project:delete whole-bucket rm. Cache entries for the doomed
+  // sessions are dropped.
   deleteSessionsByProject: async (projectId) => {
     const { sessions, activeSessionId } = get()
     const doomed = sessions.filter((s) => s.projectId === projectId)
     if (!doomed.length) return
+    // If any doomed session is mid-turn, stop it first so the turn stops
+    // writing to keys we're about to delete.
+    const streaming = useChatStore.getState().streamingSessionId
+    if (streaming && doomed.some((s) => s.id === streaming)) {
+      useChatStore.getState().stop()
+    }
     for (const s of doomed) {
       await window.electronAPI.deleteSessionMessages(s.id)
       await window.electronAPI.deleteSessionRules(s.id)
     }
     const remaining = sessions.filter((s) => s.projectId !== projectId)
+    const cacheWithout = { ...get().messagesBySession }
+    for (const s of doomed) delete cacheWithout[s.id]
     const activeStillValid = remaining.some((s) => s.id === activeSessionId)
     set({
       sessions: remaining,
+      messagesBySession: cacheWithout,
       activeSessionId: activeStillValid ? activeSessionId : null,
       currentMessages: activeStillValid ? get().currentMessages : []
     })
@@ -136,8 +171,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   // Called when the active PROJECT changes: if the currently-active session
   // doesn't belong to the new project, drop into the project's most-recent
-  // session (or clear if it has none). Prevents the chat panel from showing a
-  // session that isn't in the sidebar's selected project.
+  // session (or clear if it has none).
   ensureActiveSessionInProject: async (projectId) => {
     const { activeSessionId, sessions } = get()
     const belongs = sessions.some((s) => s.id === activeSessionId && s.projectId === projectId)
@@ -148,29 +182,54 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (latest) {
       await get().switchSession(latest.id)
     } else {
-      await get().saveCurrentMessages()
       set({ activeSessionId: null, currentMessages: [] })
     }
   },
 
-  setMessages: (msgs) => set({ currentMessages: msgs }),
-  addMessage: (msg) => set((st) => ({ currentMessages: [...st.currentMessages, msg] })),
-  // Update a tool message in place (matched by toolCallId) — used to transition
-  // a tool-call card from 'running' to 'success'/'failed' on the SAME element
-  // rather than removing+re-adding it.
-  updateToolMessage: (toolCallId, patch) =>
-    set((st) => ({
-      currentMessages: st.currentMessages.map((m) =>
-        m.role === 'tool' && m.toolCallId === toolCallId ? { ...m, ...patch } : m
-      )
-    })),
+  setMessages: (msgs, sid) => set((st) => {
+    const target = sid ?? st.activeSessionId
+    if (!target || !st.sessions.some((s) => s.id === target)) return {}
+    return {
+      messagesBySession: { ...st.messagesBySession, [target]: msgs },
+      currentMessages: target === st.activeSessionId ? msgs : st.currentMessages
+    }
+  }),
 
-  saveCurrentMessages: async () => {
-    const { activeSessionId, currentMessages } = get()
-    if (!activeSessionId) return
-    await window.electronAPI.writeSessionMessages(activeSessionId, currentMessages)
+  addMessage: (msg, sid) => set((st) => {
+    const target = sid ?? st.activeSessionId
+    if (!target || !st.sessions.some((s) => s.id === target)) return {}
+    const next = [...(st.messagesBySession[target] ?? []), msg]
+    return {
+      messagesBySession: { ...st.messagesBySession, [target]: next },
+      // Only touch the display pointer when writing to the viewed session — a
+      // background turn writing its own session must not re-render the panel.
+      currentMessages: target === st.activeSessionId ? next : st.currentMessages
+    }
+  }),
+
+  // Update a tool message in place (matched by toolCallId) — used to transition
+  // a tool-call card from 'running' to 'success'/'failed' on the SAME element.
+  updateToolMessage: (toolCallId, patch, sid) => set((st) => {
+    const target = sid ?? st.activeSessionId
+    if (!target || !st.sessions.some((s) => s.id === target)) return {}
+    const next = (st.messagesBySession[target] ?? []).map((m) =>
+      m.role === 'tool' && m.toolCallId === toolCallId ? { ...m, ...patch } : m
+    )
+    return {
+      messagesBySession: { ...st.messagesBySession, [target]: next },
+      currentMessages: target === st.activeSessionId ? next : st.currentMessages
+    }
+  }),
+
+  saveCurrentMessages: async (sid) => {
+    const target = sid ?? get().activeSessionId
+    if (!target) return
+    const msgs = get().messagesBySession[target]
+    if (!msgs) return                       // never-loaded session: nothing to persist
+    if (!get().sessions.some((s) => s.id === target)) return  // ghost guard (deleted mid-turn)
+    await window.electronAPI.writeSessionMessages(target, msgs)
     set((st) => ({
-      sessions: st.sessions.map((s) => s.id === activeSessionId ? { ...s, messageCount: currentMessages.filter((m) => m.role === 'user' || m.role === 'assistant').length, updatedAt: Date.now() } : s)
+      sessions: st.sessions.map((s) => s.id === target ? { ...s, messageCount: msgs.filter((m) => m.role === 'user' || m.role === 'assistant').length, updatedAt: Date.now() } : s)
     }))
     await get().persistIndex()
   },
