@@ -57,6 +57,8 @@
 
 ## 四、改进方向(分阶段)
 
+> **2026-06-15 复核·实现状态**：**全部未实现**。仅 `ModelConfig.protocol` 字段已预留（`'openai' | 'anthropic'`，缺省 openai）；Provider 接口抽象、`AnthropicProvider`、独立 SSE 解析、前端协议选择、实测验证均**未落地**（`llm/` 目录下无任何 Anthropic 代码，发送层仍是纯 OpenAI 格式）。本文保留为未来实现依据。
+
 1. **配置**:`ModelConfig` 加 `provider: 'openai' | 'anthropic'`(缺省 openai);`models.json` 透传。
 2. **抽象**:把现有「发送+解析+消息转换」拆成 `OpenAIProvider`;定义 Provider 接口 + 工厂;agent 循环改用工厂产出的 provider(行为不变,纯重构)。
 3. **新增 `AnthropicProvider`**:消息转换 + 请求(endpoint/鉴权/CORS 头)+ 独立 SSE 解析 + 结束原因/用量映射。

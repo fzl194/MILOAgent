@@ -8,6 +8,8 @@
 
 ## 0. 背景:我们现在的上下文管理(现状与问题)
 
+> ⚠️ **2026-06-15 复核**：本节描述的是 **2026-06-13 的旧现状**（按消息条数裁剪、Gap C 配对 bug、无 token 感知）。**此后已全部升级**为 token 化 + 可插拔 Compactor 流水线：`maxContextMessages` 与 `splice(1,1)` 已从代码中移除；三接口已落地（见 §3、§4 实现状态，及《功能盘点 2026-06-14》§3.2）。本节保留为历史诊断。
+
 | 维度 | 现状 | 问题 |
 |---|---|---|
 | 裁剪依据 | **固定消息条数** `maxContextMessages=20`(`config-store.ts`,传入 `ContextManager`) | 不看 token:一条 23KB 的 read_file 结果算 1 条,20 条可能远超模型窗口 → `context length exceeded` |
@@ -98,6 +100,8 @@
 
 ## 3. 可演进接口设计(关键:不写死)
 
+> ✅ **2026-06-15 复核**：下列三个接口（`TokenEstimator` / `Compactor` / `ContextStrategy`）**已全部落地**于 `context-strategy.ts`（各阶段实现状态见 §4）。
+
 > 核心原则:**持久层(session 文件)是全量真相源;「发送给 API 的上下文」只是它的一份视图。** 所有裁剪/压缩只改视图,永不破坏全量。这样今天能简单实现,明天能升级到 Claude Code 完整机制而无需重写。
 
 ### 3.1 抽象三个可插拔接口
@@ -156,6 +160,8 @@ interface ContextStrategy {
 ---
 
 ## 4. 分阶段落地建议
+
+> **2026-06-15 复核·实现状态**：**P0、P1 均已落地**——修 Gap C 改为整块删除（不产生孤儿 tool）、`RoughTokenEstimator` + 模型 `contextWindow` + token 预算兜底、`ToolResultTrimCompactor`（填充率 >0.5 折叠旧工具结果、保最近 10 条）、三接口 + `DefaultContextStrategy`/`CountTrimCompactor`。**P2 `HandoffCompactor`（LLM 交接摘要）未实现**（`maybeCompact` 仅留接缝、返回 null）；**P3 全部未实现**。下表保留为原始计划。
 
 | 阶段 | 内容 | 解决 |
 |---|---|---|
