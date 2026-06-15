@@ -1,5 +1,7 @@
 # 2026-06-15 · desktop-agent 运行态监控面板设计(v2,含架构审查修订)
 
+> **实现状态(2026-06-15):已落地。** 按本文档设计实现并经三路代码审查(ecc 内核审查 + ecc 面板审查 + codex 第二路),`npm run typecheck` 全绿、107 单测全绿、production build 通过。实现要点与本设计的对应:采集层 `src/renderer/src/monitor/`(bus 进程级单例总线 + dimensions 注册表 + persistence 持久化订阅者);采集点固化在 `loop.ts` 的 `onRequestReady` 回调 + `context-strategy.ts` 的 `toViewWithDecisions`/`runWithDecision`;持久化经 `main/index.ts` 的 `snapshot:write/list/read/deleteSession` IPC;面板在 `components/admin/MonitorPanel/`(live + 回看双模式)。实现中对原设计做的细节调整:① context_metrics 不单独持久化(其数据随 request_view 快照落盘,避免破坏惰性发布契约);② 持久化订阅者按 sessionId 守卫,防止进程单例总线在并发 turn 下串台;③ teardown 时 `bus.drain()` 等待在途 IPC 完成,防孤儿快照。待补:端到端手动 dev 验证、真实 tokenizer、源头限制工具结果大小(见 ④ 改进方向)。
+
 > 面向「开发调试」的运行态监控:实时 + 可追溯地观察 agent 每次请求**实际发给模型的内容、裁剪决策、token、工具调用全链**,验证上下文工程是否符合意图。本版据独立架构审查修订了三处关键点:采集点从「贴在局部变量」改为「循环 / 策略主动暴露」;窗口形态从「独立 DevTools 窗口」收敛为「主应用内面板」;持久化补齐时序与容错。
 
 ---
