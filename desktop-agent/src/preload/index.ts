@@ -32,6 +32,12 @@ const electronAPI = {
   appendTrace: (pid: string, sid: string, event: object) => ipcRenderer.invoke('trace:append', pid, sid, event),
   readTrace: (pid: string, sid: string) => ipcRenderer.invoke('trace:read', pid, sid),
   deleteTrace: (pid: string, sid: string) => ipcRenderer.invoke('trace:delete', pid, sid),
+  // Request snapshots (per-project, per-session) — monitor panel replay data
+  snapshotWrite: (pid: string, sid: string, callId: string, data: object) =>
+    ipcRenderer.invoke('snapshot:write', pid, sid, callId, data),
+  snapshotList: (pid: string, sid: string) => ipcRenderer.invoke('snapshot:list', pid, sid),
+  snapshotRead: (pid: string, sid: string, callId: string) => ipcRenderer.invoke('snapshot:read', pid, sid, callId),
+  snapshotDeleteSession: (pid: string, sid: string) => ipcRenderer.invoke('snapshot:deleteSession', pid, sid),
   // Delete a project's data bucket (traces + stats)
   deleteProject: (pid: string) => ipcRenderer.invoke('project:delete', pid),
   // Session permission rules (persisted per session)

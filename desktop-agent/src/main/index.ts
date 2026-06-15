@@ -15,6 +15,10 @@ const PROJECTS_FILE = () => join(DATA_DIR(), 'projects.json')
 const PROJECTS_DATA_DIR = () => join(DATA_DIR(), 'projects')
 const projectTracesDir = (pid: string) => join(PROJECTS_DATA_DIR(), pid, 'traces')
 const projectStatsFile = (pid: string) => join(PROJECTS_DATA_DIR(), pid, 'stats', 'events.jsonl')
+// Per-request snapshots: projects/<pid>/snapshots/<sid>/<callId>.json (+ a
+// lightweight <sid>/index.jsonl so list doesn't have to read every full snapshot).
+const projectSnapshotsDir = (pid: string) => join(PROJECTS_DATA_DIR(), pid, 'snapshots')
+const sessionSnapshotsDir = (pid: string, sid: string) => join(projectSnapshotsDir(pid), sid)
 let mainWindow: BrowserWindow | null = null
 
 async function pathExists(p: string): Promise<boolean> {
@@ -205,9 +209,47 @@ function serializeStatsWrite(fn: () => Promise<void>): Promise<void> {
 }
 
 // ===== FS & Shell =====
+// read_file main-process defense layer (P1). The renderer's approval gate is a
+// policy, not a boundary — a bypassed renderer could otherwise read anything.
+// Here we refuse device/special files, cap size, and canonicalize (resolve
+// symlinks / '..' so they can't prefix-spoof a path check). write/shell get the
+// same treatment in P2.
+const READ_MAX_BYTES = 2 * 1024 * 1024 // 2 MB; larger files are refused whole.
+
+// Device / special files that must never be read as text. Windows reserves
+// CON/PRN/AUX/NUL/COM1-9/LPT1-9 as the final path segment; Unix uses /dev/*.
+function isDevicePath(p: string): boolean {
+  const seg = p.replace(/\\/g, '/').split('/').pop() ?? ''
+  if (process.platform === 'win32') {
+    return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(seg)
+  }
+  const norm = p.replace(/\\/g, '/')
+  return norm === '/dev' || norm.startsWith('/dev/')
+}
+
+// Resolve symlinks / short paths to a canonical absolute path. Falls back to
+// the input if the path doesn't exist yet (caller then hits a normal ENOENT).
+async function canonicalize(p: string): Promise<string> {
+  try { return await realpath(p) } catch { return p }
+}
+
 ipcMain.handle('fs:readFile', async (_, p: string, cwd?: string) => {
-  try { return { success: true, data: await readFile(resolveUnder(p, cwd), 'utf-8') } }
-  catch (e: any) { return { success: false, error: e.message } }
+  try {
+    const resolved = resolveUnder(p, cwd)
+    if (isDevicePath(resolved)) return { success: false, error: '拒绝读取设备/特殊文件:' + resolved }
+    // Re-check after canonicalizing: a benign-looking path can symlink to a device.
+    const canon = await canonicalize(resolved)
+    if (isDevicePath(canon)) return { success: false, error: '拒绝读取设备/特殊文件(canonicalized)' }
+    const st = await stat(canon)
+    // Refuse oversized files without reading them (avoids loading 100s of MB
+    // into memory). truncated/bytes let the renderer steer the model to a
+    // ranged read; older consumers ignore these extra fields.
+    if (st.size > READ_MAX_BYTES) {
+      return { success: false, error: `文件过大(${st.size} 字节,上限 ${READ_MAX_BYTES} 字节)`, truncated: true, bytes: st.size }
+    }
+    const data = await readFile(canon, 'utf-8')
+    return { success: true, data, bytes: st.size }
+  } catch (e: any) { return { success: false, error: e.message } }
 })
 ipcMain.handle('fs:writeFile', async (_, p: string, c: string, cwd?: string) => {
   try { const rp = resolveUnder(p, cwd); await mkdir(join(rp, '..'), { recursive: true }); await writeFile(rp, c, 'utf-8'); return { success: true } }
@@ -517,6 +559,75 @@ ipcMain.handle('trace:read', async (_, pid: string, sid: string) => {
 ipcMain.handle('trace:delete', async (_, pid: string, sid: string) => {
   try {
     await unlink(join(projectTracesDir(pid), sid + '.jsonl'))
+    return { success: true }
+  } catch (e: any) {
+    return { success: e?.code === 'ENOENT' }
+  }
+})
+
+// ===== Request snapshots (per-project: projects/<pid>/snapshots/<sid>/<callId>.json)
+// One full-request snapshot per llm_call, for the monitor panel's replay mode.
+// The body can be large (full message view + decisions), so list reads a
+// sidecar index.jsonl instead of every snapshot file; read loads one on demand.
+ipcMain.handle('snapshot:write', async (_, pid: string, sid: string, callId: string, data: object) => {
+  try {
+    const dir = sessionSnapshotsDir(pid, sid)
+    await mkdir(dir, { recursive: true })
+    // Two-step write (snapshot body → index row). Not atomic — the replay side
+    // tolerates a missing snapshot (degrades to "view unavailable, metrics only")
+    // and a dangling index row (file read returns success:false). This matches
+    // the design doc's "持久化非强一致 / 容忍快照缺失" trade-off.
+    await writeFile(join(dir, callId + '.json'), JSON.stringify(data), 'utf-8')
+    const meta = {
+      callId: (data as { callId?: string }).callId ?? callId,
+      ts: (data as { ts?: number }).ts ?? Date.now(),
+      modelConfigId: (data as { modelConfigId?: string }).modelConfigId ?? '',
+      round: (data as { round?: number }).round ?? 0,
+      turnId: (data as { turnId?: string }).turnId ?? ''
+    }
+    await new Promise<void>((resolve, reject) => {
+      appendFile(join(dir, 'index.jsonl'), JSON.stringify(meta) + '\n', (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e.message }
+  }
+})
+
+ipcMain.handle('snapshot:list', async (_, pid: string, sid: string) => {
+  try {
+    const content = await readFile(join(sessionSnapshotsDir(pid, sid), 'index.jsonl'), 'utf-8')
+    const metas: unknown[] = []
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try { metas.push(JSON.parse(trimmed)) } catch { /* skip malformed row */ }
+    }
+    return { success: true, data: metas }
+  } catch {
+    // No index yet (new session / never monitored) → empty list, not an error.
+    return { success: true, data: [] }
+  }
+})
+
+ipcMain.handle('snapshot:read', async (_, pid: string, sid: string, callId: string) => {
+  try {
+    const content = await readFile(join(sessionSnapshotsDir(pid, sid), callId + '.json'), 'utf-8')
+    return { success: true, data: JSON.parse(content) }
+  } catch (e: any) {
+    // Missing snapshot (dangling index row, or never written) → signal "view
+    // unavailable" to the panel rather than erroring; the panel shows metrics
+    // only when this happens (design doc: 容忍快照缺失).
+    return { success: false, error: e?.code === 'ENOENT' ? 'snapshot not found' : e.message }
+  }
+})
+
+ipcMain.handle('snapshot:deleteSession', async (_, pid: string, sid: string) => {
+  try {
+    await rm(sessionSnapshotsDir(pid, sid), { recursive: true, force: true })
     return { success: true }
   } catch (e: any) {
     return { success: e?.code === 'ENOENT' }

@@ -22,6 +22,8 @@ import {
   DEFAULT_CONTEXT_WINDOW
 } from './context-strategy'
 import { classify, decide, type ClassifyContext } from '../safety/classifier'
+import { runTool, type ToolRegistry } from '../tools/harness'
+import type { RequestSnapshot, TurnLifecycleStage } from '../../monitor/types'
 
 /**
  * Internal runaway guard: caps how many tool rounds a single turn may run. Not
@@ -57,6 +59,23 @@ export interface AgentSafety {
   gate: ApprovalGate // drives the UI approval card
 }
 
+/**
+ * Monitoring hooks injected by the chat store. BOTH are optional and default to
+ * no-ops, so tests and any other AgentLoop consumer are unaffected. When wired
+ * (by chat-store → getMonitorBus), they let the runtime monitor observe:
+ *   - onRequestReady: the exact view + compaction decisions about to be sent
+ *     (one call per LLM round). This is the "主动暴露的语义方法" hook — it
+ *     fires right after the bounded view is built, before provider.chat().
+ *   - onLifecycle: turn lifecycle markers (started / aborted / finished). The
+ *     'aborted' marker prevents the monitor panel from showing a "request sent
+ *     but never completed" hanging turn when the user stops mid-stream.
+ * See docs/2026-06-15-desktop-agent-运行态监控面板设计.md §② 采集点.
+ */
+export interface AgentLoopHooks {
+  onRequestReady?: (snapshot: RequestSnapshot) => void
+  onLifecycle?: (stage: TurnLifecycleStage, ctx: { round: number; callId: string; reason?: string }) => void
+}
+
 export class AgentLoop {
   private context: ContextManager
   private provider: LLMProvider
@@ -68,7 +87,15 @@ export class AgentLoop {
     existingMessages?: Message[],
     private safety?: AgentSafety,
     private signal?: AbortSignal,
-    contextStrategy?: ContextStrategy
+    contextStrategy?: ContextStrategy,
+    /** Optional monitoring hooks. Default no-op → tests/other consumers unaffected. */
+    private hooks: AgentLoopHooks = {},
+    /** Model config id for snapshot attribution. Passed through to the snapshot. */
+    private modelConfigId: string = '',
+    /** P1 harness rollout: when provided, tools registered here run through the
+     *  harness instead of the legacy executor. Authorization still flows through
+     *  authorize()/classify/decide — this only swaps execution. */
+    private toolRegistry?: ToolRegistry
   ) {
     // ContextManager is the truth source; the strategy produces the bounded
     // view sent to the LLM. If none is supplied (e.g. tests), use a default.
@@ -116,8 +143,18 @@ export class AgentLoop {
     appendedSinceLastCall.push(userMsg)
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      // Round-scoped call id, generated up front so the monitor snapshot, the
+      // `done` event, and any aborted marker all share one stable identifier.
+      const callId = crypto.randomUUID()
+
       // A user "stop" between rounds ends the turn gracefully (no error shown).
-      if (this.signal?.aborted) return
+      if (this.signal?.aborted) {
+        // Emit an aborted marker so the monitor panel doesn't show a "request
+        // sent but never completed" hanging turn when the user stops before a
+        // round even fires. (Hook is a no-op when not wired.)
+        this.emitLifecycle('aborted', { round, callId, reason: '用户停止' })
+        return
+      }
 
       // Between-round compaction hook. P2 (Codex-style handoff summary) plugs in
       // here via the strategy's maybeCompact; it is a no-op by default, so this
@@ -128,11 +165,32 @@ export class AgentLoop {
       const compacted = await this.context.maybeCompact()
       if (compacted) this.context.replaceMessages(compacted)
 
+      // Second abort check AFTER the async compaction: maybeCompact() can await
+      // (P2 LLM handoff summary), and the user may have stopped during that
+      // window. Without this we'd build a request, fire the monitor snapshot,
+      // and start a provider fetch only to abort immediately — leaving a phantom
+      // "request prepared then aborted" row on the monitor panel.
+      if (this.signal?.aborted) {
+        this.emitLifecycle('aborted', { round, callId, reason: '用户停止' })
+        return
+      }
+
       const startedAt = Date.now()
-      // Build the bounded request view once; contextMsgCount reflects what is
-      // actually sent (post-compaction), not the full history length.
-      const requestMessages = this.context.toOpenAIMessages()
+      // Build the bounded request view ONCE — produceRequest yields the internal
+      // view, the compaction decisions, the self-healed wire-format messages,
+      // and the view metrics in a single pass (no double toView). The monitor
+      // hook consumes the same bundle so it can't drift from what's sent.
+      const request = this.context.produceRequest()
+      const requestMessages = request.openaiMessages
       const contextMsgCount = requestMessages.length
+
+      // Monitoring hook: hand the monitor the EXACT view + compaction decisions
+      // about to be sent. This is the "主动暴露的语义方法" collection point — it
+      // fires once per round, right after the view is built and before the
+      // provider call. The hook is a no-op by default (tests/other consumers),
+      // and emitRequestReady swallows any error so monitoring can never corrupt
+      // the agent loop.
+      this.emitRequestReady(turnId, round, callId, startedAt, request)
 
       try {
         const stream = this.provider.chat(requestMessages, ALL_TOOLS, this.signal)
@@ -156,7 +214,6 @@ export class AgentLoop {
             this.context.add(assistantMsg)
             appendedSinceLastCall.push(assistantMsg)
 
-            const callId = crypto.randomUUID()
             const appended = appendedSinceLastCall.splice(0, appendedSinceLastCall.length)
             const durationMs = Date.now() - startedAt
 
@@ -213,6 +270,7 @@ export class AgentLoop {
               }
 
               let result: ToolResult
+              let resultTruncated = false
               let riskLevel: RiskLevel | undefined
               let approvedBy: ApprovalSource | undefined
 
@@ -234,14 +292,42 @@ export class AgentLoop {
                 } else {
                   // Approved (auto / allowlist / user). A single tool failing should
                   // not abort the whole turn — surface the error as the tool result.
-                  try {
-                    result = await this.toolExecutor.execute(tc.name, parsedArgs, this.signal)
-                  } catch (err: any) {
-                    result = {
-                      toolCallId: tc.id,
-                      name: tc.name,
-                      content: `Tool execution failed: ${err?.message ?? String(err)}`,
-                      isError: true
+                  const harnessTool = this.toolRegistry?.get(tc.name)
+                  if (harnessTool) {
+                    // Harness path (P1): runTool owns validate → checkPermissions →
+                    // call → shape. Authorization already happened in authorize().
+                    try {
+                      const raw = await runTool(harnessTool, parsedArgs, {
+                        cwd: this.safety?.ctx.cwd,
+                        signal: this.signal
+                      })
+                      result = {
+                        toolCallId: tc.id,
+                        name: tc.name,
+                        content: raw.content,
+                        isError: raw.isError
+                      }
+                      resultTruncated = raw.truncated ?? false
+                    } catch (err: any) {
+                      result = {
+                        toolCallId: tc.id,
+                        name: tc.name,
+                        content: `Tool execution failed: ${err?.message ?? String(err)}`,
+                        isError: true
+                      }
+                    }
+                  } else {
+                    // Legacy executor (all tools when the flag is off; write_file
+                    // and run_shell always, until migrated in later phases).
+                    try {
+                      result = await this.toolExecutor.execute(tc.name, parsedArgs, this.signal)
+                    } catch (err: any) {
+                      result = {
+                        toolCallId: tc.id,
+                        name: tc.name,
+                        content: `Tool execution failed: ${err?.message ?? String(err)}`,
+                        isError: true
+                      }
                     }
                   }
                 }
@@ -281,7 +367,7 @@ export class AgentLoop {
                   name: tc.name,
                   arguments: parsedArgs,
                   result: result.content,
-                  resultTruncated: false,
+                  resultTruncated: resultTruncated,
                   isError: result.isError,
                   startedAt: toolStartedAt,
                   durationMs: Date.now() - toolStartedAt,
@@ -297,7 +383,12 @@ export class AgentLoop {
         }
       } catch (err: any) {
         // An abort (user stop) mid-stream ends the turn silently.
-        if (this.signal?.aborted) return
+        if (this.signal?.aborted) {
+          // Emit an aborted marker so the monitor panel can close out this round
+          // instead of showing it as a request that never completed.
+          this.emitLifecycle('aborted', { round, callId, reason: '用户停止' })
+          return
+        }
         yield { type: 'error', data: err.message }
         return
       }
@@ -306,6 +397,63 @@ export class AgentLoop {
     yield {
       type: 'error',
       data: `Reached maximum tool rounds (${MAX_TOOL_ROUNDS})`
+    }
+  }
+
+  /**
+   * Fire the onRequestReady monitor hook with the request bundle just produced.
+   * Fully guarded — a missing hook, a throwing hook, or a throwing payload
+   * builder can NEVER propagate into the agent loop. The config block mirrors
+   * the model metadata relevant for replay (window + sampling); richer fields
+   * can be added later without changing the snapshot envelope.
+   */
+  private emitRequestReady(
+    turnId: string,
+    round: number,
+    callId: string,
+    startedAt: number,
+    request: { view: Message[]; decisions: RequestSnapshot['decisions']; openaiMessages: unknown[]; metrics: RequestSnapshot['metrics']; selfHeal: RequestSnapshot['selfHeal'] }
+  ): void {
+    const hook = this.hooks?.onRequestReady
+    if (!hook) return
+    try {
+      hook({
+        callId,
+        turnId,
+        round,
+        sessionId: '',
+        ts: startedAt,
+        modelConfigId: this.modelConfigId,
+        view: request.view,
+        openaiMessages: request.openaiMessages,
+        metrics: request.metrics,
+        decisions: request.decisions,
+        selfHeal: request.selfHeal,
+        config: {
+          // contextWindow is part of metrics.window; reuse it rather than
+          // threading a separate value through.
+          contextWindow: request.metrics.window
+        }
+      })
+    } catch (err) {
+      console.warn('[agent-loop] onRequestReady hook threw — ignored', err)
+    }
+  }
+
+  /**
+   * Fire the onLifecycle monitor hook (started / aborted / finished). Same
+   * guard discipline as emitRequestReady — monitoring must never break the loop.
+   */
+  private emitLifecycle(
+    stage: TurnLifecycleStage,
+    ctx: { round: number; callId: string; reason?: string }
+  ): void {
+    const hook = this.hooks?.onLifecycle
+    if (!hook) return
+    try {
+      hook(stage, ctx)
+    } catch (err) {
+      console.warn('[agent-loop] onLifecycle hook threw — ignored', err)
     }
   }
 

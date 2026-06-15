@@ -1,7 +1,16 @@
 import type { Project } from '../agent-core/types'
 
 export interface ElectronAPI {
-  readFile: (p: string, cwd?: string) => Promise<{ success: boolean; data?: string; error?: string }>
+  readFile: (p: string, cwd?: string) => Promise<{
+    success: boolean
+    data?: string
+    error?: string
+    /** Present (true) when the main process refused an oversized file without
+     *  reading it; pairs with `bytes` so the renderer can steer the model to a
+     *  ranged read. Older consumers ignore both. */
+    truncated?: boolean
+    bytes?: number
+  }>
   writeFile: (p: string, c: string, cwd?: string) => Promise<{ success: boolean; error?: string }>
   runShell: (cmd: string, cwd?: string) => Promise<{ success: boolean; data?: { stdout: string; stderr: string }; error?: string }>
   cancelShell: () => Promise<{ success: boolean }>
@@ -28,6 +37,11 @@ export interface ElectronAPI {
   appendTrace: (pid: string, sid: string, event: object) => Promise<{ success: boolean; error?: string }>
   readTrace: (pid: string, sid: string) => Promise<{ success: boolean; data?: any[] }>
   deleteTrace: (pid: string, sid: string) => Promise<{ success: boolean }>
+  // Request snapshots (per-project, per-session) — monitor panel replay data
+  snapshotWrite: (pid: string, sid: string, callId: string, data: object) => Promise<{ success: boolean; error?: string }>
+  snapshotList: (pid: string, sid: string) => Promise<{ success: boolean; data?: any[] }>
+  snapshotRead: (pid: string, sid: string, callId: string) => Promise<{ success: boolean; data?: any; error?: string }>
+  snapshotDeleteSession: (pid: string, sid: string) => Promise<{ success: boolean }>
   // Delete a project's data bucket
   deleteProject: (pid: string) => Promise<{ success: boolean; error?: string }>
   readSessionRules: (sid: string) => Promise<{ success: boolean; data?: any[] }>

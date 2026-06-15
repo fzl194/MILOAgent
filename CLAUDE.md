@@ -6,7 +6,7 @@
 
 ## 1. 项目定位
 
-`D:\study\MILOAgent` 是一个 **git 仓库**,包含:
+仓库根是当前 **git 仓库根目录**(`.`),包含:
 
 - **`desktop-agent/`** —— 一个**本地优先**的桌面 AI Agent(Electron 桌面应用)。代码主体。
 - **`docs/`** —— 项目文档(演进记录、调研选型、盘点),见 §7。
@@ -14,12 +14,14 @@
 
 这是一个**正在迭代的个人项目**,同时参考 Claude Code / Codex 的机制来构建自己的 agent 内核。
 
+> 外部参考(Claude Code 源码解读知识库、Claude Code 源码本身)在仓库**同级别目录**下,具体目录名因机器而异,详见 §11。
+
 ---
 
 ## 2. 仓库布局
 
 ```
-MILOAgent/
+.
 ├── desktop-agent/              # Electron 应用(代码主体)
 │   ├── src/
 │   │   ├── main/index.ts       # 主进程:IPC、文件系统、Shell 执行、数据持久化
@@ -74,7 +76,7 @@ npm run test:watch   # 监听模式
 
 **规则:**
 - **多用 Skill**(ecc 系列、codex),这是默认工作方式。
-- **🚫 禁止调用 `deep-research` skill。** 需要"调研/查资料"时,改用 `D:\study\claude-code-complete-guide_v2-main`(知识库)+ `WebSearch`/网页抓取,自己整合。
+- **🚫 禁止调用 `deep-research` skill。** 需要"调研/查资料"时,改用同级别目录下的知识库(本机具体目录名按本地约定;§8)+ `WebSearch`/网页抓取,自己整合。
 - 改动跨多个文件时,用 `TaskCreate` 跟踪进度。
 - 类型检查或测试不绿,不得宣告"完成";如实报告失败。
 
@@ -104,7 +106,7 @@ npm run test:watch   # 监听模式
 
 ## 6. Claude Code 式机制(本项目遵循)
 
-机制设计的**权威参考**在知识库:`D:\study\claude-code-complete-guide_v2-main\docs\`(基于 Claude Code v2.1.88 源码解读;`part06-tool-system` 工具系统/治理流水线、`part07-permissions` 权限、`part08-context-management` 上下文、`part09-memory-system` 记忆)。本项目的 agent 内核已按这些理念落地,改动时**保持一致、不要写死、预留演进接缝**。
+机制设计的**权威参考**在知识库:同级别目录下的 Claude Code 源码解读(基于 v2.1.88;`part06-tool-system` 工具系统/治理流水线、`part07-permissions` 权限、`part08-context-management` 上下文、`part09-memory-system` 记忆)。具体目录名因机器而异,见 §8。本项目的 agent 内核已按这些理念落地,改动时**保持一致、不要写死、预留演进接缝**。
 
 ### 6.1 上下文管理(已在 desktop-agent 落地 v2)
 - **持久层 = 全量真相源**;发给模型的只是一份「视图」。裁剪只改视图,不破坏全量历史。
@@ -123,7 +125,7 @@ npm run test:watch   # 监听模式
 - **项目级长期约束**写进 `docs/` 或本 CLAUDE.md;不要把代码结构/历史修复等可从代码推导的东西存进记忆。
 
 ### 6.4 工具层 harness(本项目遵循,2026-06-15 起;详见 docs/2026-06-15-工具层harness演进与安全.md)
-- 工具走固定生命周期(校验→归一化→授权→执行→整形,可观测贯穿),共用 harness 拥有;每工具只声明定制(inputSchema/checkPermissions/call/maxResultSizeChars + isReadOnly/isConcurrencySafe 元数据),关注点 co-locate 到该工具模块。契约对齐 Claude Code 源码 `D:\study\claude-code-main\src\Tool.ts`,提示词描述与参数约束与之保持一致。
+- 工具走固定生命周期(校验→归一化→授权→执行→整形,可观测贯穿),共用 harness 拥有;每工具只声明定制(inputSchema/checkPermissions/call/maxResultSizeChars + isReadOnly/isConcurrencySafe 元数据),关注点 co-locate 到该工具模块。契约对齐 Claude Code 源码 `src/Tool.ts`(同级别目录 `claude-code-main/`),提示词描述与参数约束与之保持一致。
 - **安全双层(本项目特有,因无内核沙箱,不可让步)**:① renderer 审批闸门(classify→decide,deny>ask>allow 首次匹配,危险一律问、永不自动/记忆);② **主进程 defense-in-depth 兜底**——每个 IPC handler 重新校验已批准的调用,工作区外写/设备文件/超限一律拒,即使 renderer 被绕过也不越界。
 - 改工具时:安全以本双层为准,**不照搬** Claude Code 的 bypass/无条件 allow;暂不引入 tree-sitter AST、hook 系统、并行调度(留缝,不写死)。
 
@@ -133,7 +135,7 @@ npm run test:watch   # 监听模式
 
 用户对项目文档的**硬性要求**(详见记忆 `doc-writing-style`):
 
-1. **统一放 `D:\study\MILOAgent\docs\`**,不散落到子项目。命名 **`YYYY-MM-DD-<主题>.md`**(按时间排序、可迭代)。
+1. **统一放 `docs/`**(仓库根下的 `docs/`),不散落到子项目。命名 **`YYYY-MM-DD-<主题>.md`**(按时间排序、可迭代)。
 2. **四段式**:① 功能要点 ② 实现逻辑 ③ 当前弊端 ④ 改进方向。
 3. **不堆代码级细节**:不要 `file:line`、函数签名、IPC 通道名。读完应知道「是什么 / 怎么做的 / 有啥问题 / 怎么改」。
 4. 调研/选型类文档**带参考链接**。
@@ -145,7 +147,7 @@ npm run test:watch   # 监听模式
 
 ## 8. 知识库联动
 
-`D:\study\claude-code-complete-guide_v2-main` 是**机制参考源**(Claude Code v2.1.88 源码解读的 VitePress 站点;不在本仓库内):
+同级别目录下的**机制参考源**(Claude Code v2.1.88 源码解读的 VitePress 站点;不在本仓库内)——**具体目录名因机器而异**(本机按本地约定,详见本机的 CLAUDE 同步说明),CLAUDE.md 里不写死绝对路径。
 
 - 遇到「Claude Code / agent 机制怎么做」的问题,**先查知识库**:入口 `docs/index.md`,按 part 分章(`part06-tool-system`、`part07-permissions`、`part08-context-management`…),每 part 内有 `index.md` + 编号小节。
 - 该知识库是**源码解读**(非带时效标注的笔记),引用以源码事实为准;涉及版本敏感处用 WebSearch 核实。
@@ -170,6 +172,23 @@ npm run test:watch   # 监听模式
 - **项目级(Project)**:按工作目录隔离;会话归属项目。
 - **安全**:沙箱模式(只读/工作区可写/完全访问)+ 审批策略(自动/需要时问/全部确认)+ allowlist。
 - **会话/统计/trace**:全量持久化,可清空(危险区)。
+
+---
+
+## 11. 外部参考(本项目依赖的、仓库外资源)
+
+> 这两个资源都在仓库**同级别目录**下,**具体目录名因机器而异**(CLAUDE.md 不写死绝对路径)。本机实际名称请按本机约定(查询本机 `~/.claude/projects/.../memory/` 里与本机环境相关的 memory,或询问用户)。
+
+| 资源 | 作用 | 用到的小节 |
+|---|---|---|
+| **Claude Code 源码解读知识库**(VitePress 站点,基于 v2.1.88 源码) | agent 机制权威参考:`part06-tool-system`、`part07-permissions`、`part08-context-management`、`part09-memory-system` 等 | §6、§8 |
+| **Claude Code 源码**(`src/Tool.ts` 等) | 工具层契约对齐(输入 schema、权限检查、生命周期元数据) | §6.4 |
+
+**怎么查:**
+- 知识库:入口 `docs/index.md`,按 part 编号小节定位;先查知识库、再 WebSearch 核实版本敏感信息(§8)。
+- 源码:用 `Grep` / `Read` 直接读 `src/Tool.ts` 等关键文件,与本项目 `desktop-agent/src/renderer/src/agent-core/tools/` 对照看。
+
+**前置检查:** 首次在本机工作时,先确认本机是否已建好对应的知识库章节(`part06-tool-system` 等)和源码目录;若缺失,这是个独立任务,不在 CLAUDE.md 路径替换范围内。
 
 ---
 
