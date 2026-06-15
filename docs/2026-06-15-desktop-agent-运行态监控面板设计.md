@@ -1,6 +1,8 @@
 # 2026-06-15 · desktop-agent 运行态监控面板设计(v2,含架构审查修订)
 
-> **实现状态(2026-06-15):已落地。** 按本文档设计实现并经三路代码审查(ecc 内核审查 + ecc 面板审查 + codex 第二路),`npm run typecheck` 全绿、107 单测全绿、production build 通过。实现要点与本设计的对应:采集层 `src/renderer/src/monitor/`(bus 进程级单例总线 + dimensions 注册表 + persistence 持久化订阅者);采集点固化在 `loop.ts` 的 `onRequestReady` 回调 + `context-strategy.ts` 的 `toViewWithDecisions`/`runWithDecision`;持久化经 `main/index.ts` 的 `snapshot:write/list/read/deleteSession` IPC;面板在 `components/admin/MonitorPanel/`(live + 回看双模式)。实现中对原设计做的细节调整:① context_metrics 不单独持久化(其数据随 request_view 快照落盘,避免破坏惰性发布契约);② 持久化订阅者按 sessionId 守卫,防止进程单例总线在并发 turn 下串台;③ teardown 时 `bus.drain()` 等待在途 IPC 完成,防孤儿快照。待补:端到端手动 dev 验证、真实 tokenizer、源头限制工具结果大小(见 ④ 改进方向)。
+> **实现状态(2026-06-15):已落地。** 按本文档设计实现并经三路代码审查(ecc 内核审查 + ecc 面板审查 + codex 第二路),`npm run typecheck` 全绿、单测全绿、production build 通过。实现要点与本设计的对应:采集层 `src/renderer/src/monitor/`(bus 进程级单例总线 + dimensions 注册表 + persistence 持久化订阅者);采集点固化在 `loop.ts` 的 `onRequestReady` 回调 + `context-strategy.ts` 的 `toViewWithDecisions`/`runWithDecision`;持久化经 `main/index.ts` 的 `snapshot:write/list/read/deleteSession` IPC;面板在 `components/admin/MonitorPanel/`(live + 回看双模式)。实现中对原设计做的细节调整:① context_metrics 不单独持久化(其数据随 request_view 快照落盘,避免破坏惰性发布契约);② 持久化订阅者按 sessionId 守卫,防止进程单例总线在并发 turn 下串台;③ teardown 时 `bus.drain()` 等待在途 IPC 完成,防孤儿快照。待补:端到端手动 dev 验证、真实 tokenizer、源头限制工具结果大小(见 ④ 改进方向)。
+
+> **演进 vs 现状核对(2026-06-16 复核):落地属实,与设计基本一致。** 采集层(进程级单例总线 + 维度注册表 + 持久化订阅者,含 sessionId 守卫防串台、teardown drain)、采集点(循环 onRequestReady/onLifecycle + 策略 toViewWithDecisions/runWithDecision + context 的 produceRequest 一次产出「视图+决策+自愈」)、四个快照 IPC、面板(实时+回看双模式,七个组件,挂在管理面板「监控」tab)逐一与设计对齐。会话删除的快照清理由会话仓在级联里调「删本会话快照」完成(非缺口)。**尚未做的仍是文档自列的改进项**:真 tokenizer、源头限工具结果大小、快照保留/清理策略、P2/P3 压缩维度接入、两次请求视图 diff 对比、独立窗口(按需)。
 
 > 面向「开发调试」的运行态监控:实时 + 可追溯地观察 agent 每次请求**实际发给模型的内容、裁剪决策、token、工具调用全链**,验证上下文工程是否符合意图。本版据独立架构审查修订了三处关键点:采集点从「贴在局部变量」改为「循环 / 策略主动暴露」;窗口形态从「独立 DevTools 窗口」收敛为「主应用内面板」;持久化补齐时序与容错。
 
@@ -14,7 +16,7 @@
 
 - **三大监控维度**:① 上下文(每次请求的实际发送视图 + 裁剪决策);② token(估算量、窗口填充率、真实用量);③ 工具调用(参数→结果→风险→审批→耗时的全链,可关联回触发它的那次请求)。
 - **实时 + 可追溯**:开发时边跑边看;事后也能回放任意会话的任意一次请求,看模型当时看到的那串。
-- **形态:主应用内面板**(admin 区延伸,与现有 TraceTimeline / StatsPanel 同处一个面板区)。**不另开独立窗口**——独立窗口带来的 main 进程窗口管理 + 全新一套跨窗口推送 IPC,对个人项目过重,且采集层已做到「永不抛」,崩溃隔离价值有限。独立窗口降级为改进方向。
+- **形态:主应用内面板**(admin 区延伸,与统计面板(StatsPanel)同处一个面板区)。**不另开独立窗口**——独立窗口带来的 main 进程窗口管理 + 全新一套跨窗口推送 IPC,对个人项目过重,且采集层已做到「永不抛」,崩溃隔离价值有限。独立窗口降级为改进方向。
 - **可热插拔**:面板上勾选开关某类监控;加新监控维度只「新增」不改 agent 核心。
 - **低侵入 + 演进友好**:默认关闭时 agent 行为零开销;采集固化在循环 / 策略**主动暴露的语义方法**上,而非读局部变量,降低与内部实现的耦合。
 
@@ -63,7 +65,7 @@
 
 ### 监控面板(主应用内)
 
-- **位置**:admin 面板区新增「监控」视图,与 TraceTimeline / StatsPanel 并列(或可折叠侧栏)。
+- **位置**:admin 面板区新增「监控」视图,与统计面板(StatsPanel)并列(或可折叠侧栏)。
 - **顶栏**:会话选择、`实时 ↔ 回看` 切换、维度开关(动态来自注册表)。
 - **左侧事件流**:实时模式滚动推送;回看模式从磁盘加载该会话的请求快照列表,点开某次。
 - **右侧详情 / 「上下文工程」视图(核心)**:选某次请求,把完整视图渲染成可读对话序列(角色 + 内容 + 折叠 / 被裁标记),旁列度量仪表盘(token 估算对窗口的填充条、触发了哪些压缩、被折叠 / 裁掉的块)。一眼验证「模型当时看到的是不是符合我的意图」。
