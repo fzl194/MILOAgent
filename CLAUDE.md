@@ -6,7 +6,7 @@
 
 ## 1. 项目定位
 
-`D:\study\Agent` 是一个 **git 仓库**,包含:
+`D:\study\MILOAgent` 是一个 **git 仓库**,包含:
 
 - **`desktop-agent/`** —— 一个**本地优先**的桌面 AI Agent(Electron 桌面应用)。代码主体。
 - **`docs/`** —— 项目文档(演进记录、调研选型、盘点),见 §7。
@@ -19,7 +19,7 @@
 ## 2. 仓库布局
 
 ```
-Agent/
+MILOAgent/
 ├── desktop-agent/              # Electron 应用(代码主体)
 │   ├── src/
 │   │   ├── main/index.ts       # 主进程:IPC、文件系统、Shell 执行、数据持久化
@@ -74,7 +74,7 @@ npm run test:watch   # 监听模式
 
 **规则:**
 - **多用 Skill**(ecc 系列、codex),这是默认工作方式。
-- **🚫 禁止调用 `deep-research` skill。** 需要"调研/查资料"时,改用 `D:\study\KnowledgeBase`(知识库)+ `WebSearch`/网页抓取,自己整合。
+- **🚫 禁止调用 `deep-research` skill。** 需要"调研/查资料"时,改用 `D:\study\claude-code-complete-guide_v2-main`(知识库)+ `WebSearch`/网页抓取,自己整合。
 - 改动跨多个文件时,用 `TaskCreate` 跟踪进度。
 - 类型检查或测试不绿,不得宣告"完成";如实报告失败。
 
@@ -104,7 +104,7 @@ npm run test:watch   # 监听模式
 
 ## 6. Claude Code 式机制(本项目遵循)
 
-机制设计的**权威参考**在知识库:`D:\study\KnowledgeBase\开发工具\Claude-Code\`(`part07-permissions` 权限、`part08-context-management` 上下文、`part09-memory-system` 记忆)。本项目的 agent 内核已按这些理念落地,改动时**保持一致、不要写死、预留演进接缝**。
+机制设计的**权威参考**在知识库:`D:\study\claude-code-complete-guide_v2-main\docs\`(基于 Claude Code v2.1.88 源码解读;`part06-tool-system` 工具系统/治理流水线、`part07-permissions` 权限、`part08-context-management` 上下文、`part09-memory-system` 记忆)。本项目的 agent 内核已按这些理念落地,改动时**保持一致、不要写死、预留演进接缝**。
 
 ### 6.1 上下文管理(已在 desktop-agent 落地 v2)
 - **持久层 = 全量真相源**;发给模型的只是一份「视图」。裁剪只改视图,不破坏全量历史。
@@ -122,13 +122,18 @@ npm run test:watch   # 监听模式
 - 持久记忆在 `~/.claude/projects/.../memory/`(每条一个事实 + frontmatter,`MEMORY.md` 为索引)。
 - **项目级长期约束**写进 `docs/` 或本 CLAUDE.md;不要把代码结构/历史修复等可从代码推导的东西存进记忆。
 
+### 6.4 工具层 harness(本项目遵循,2026-06-15 起;详见 docs/2026-06-15-工具层harness演进与安全.md)
+- 工具走固定生命周期(校验→归一化→授权→执行→整形,可观测贯穿),共用 harness 拥有;每工具只声明定制(inputSchema/checkPermissions/call/maxResultSizeChars + isReadOnly/isConcurrencySafe 元数据),关注点 co-locate 到该工具模块。契约对齐 Claude Code 源码 `D:\study\claude-code-main\src\Tool.ts`,提示词描述与参数约束与之保持一致。
+- **安全双层(本项目特有,因无内核沙箱,不可让步)**:① renderer 审批闸门(classify→decide,deny>ask>allow 首次匹配,危险一律问、永不自动/记忆);② **主进程 defense-in-depth 兜底**——每个 IPC handler 重新校验已批准的调用,工作区外写/设备文件/超限一律拒,即使 renderer 被绕过也不越界。
+- 改工具时:安全以本双层为准,**不照搬** Claude Code 的 bypass/无条件 allow;暂不引入 tree-sitter AST、hook 系统、并行调度(留缝,不写死)。
+
 ---
 
 ## 7. 文档规范(docs/)
 
 用户对项目文档的**硬性要求**(详见记忆 `doc-writing-style`):
 
-1. **统一放 `D:\study\Agent\docs\`**,不散落到子项目。命名 **`YYYY-MM-DD-<主题>.md`**(按时间排序、可迭代)。
+1. **统一放 `D:\study\MILOAgent\docs\`**,不散落到子项目。命名 **`YYYY-MM-DD-<主题>.md`**(按时间排序、可迭代)。
 2. **四段式**:① 功能要点 ② 实现逻辑 ③ 当前弊端 ④ 改进方向。
 3. **不堆代码级细节**:不要 `file:line`、函数签名、IPC 通道名。读完应知道「是什么 / 怎么做的 / 有啥问题 / 怎么改」。
 4. 调研/选型类文档**带参考链接**。
@@ -140,10 +145,10 @@ npm run test:watch   # 监听模式
 
 ## 8. 知识库联动
 
-`D:\study\KnowledgeBase` 是**机制参考源**(不是本仓库的一部分):
+`D:\study\claude-code-complete-guide_v2-main` 是**机制参考源**(Claude Code v2.1.88 源码解读的 VitePress 站点;不在本仓库内):
 
-- 遇到「Claude Code / Codex / agent 机制怎么做」的问题,**先查知识库**(根 `_index.md` → 分类 → 文件)。
-- 知识库有**新鲜度模型**(`tier:fast-moving|evolving|stable` + `next-review`),引用时注意时效;过时则提示并用 WebSearch 核实。
+- 遇到「Claude Code / agent 机制怎么做」的问题,**先查知识库**:入口 `docs/index.md`,按 part 分章(`part06-tool-system`、`part07-permissions`、`part08-context-management`…),每 part 内有 `index.md` + 编号小节。
+- 该知识库是**源码解读**(非带时效标注的笔记),引用以源码事实为准;涉及版本敏感处用 WebSearch 核实。
 - **禁止 deep-research**(§4);用知识库 + WebSearch 代替。
 
 ---
@@ -160,7 +165,7 @@ npm run test:watch   # 监听模式
 
 ## 10. agent 能力速览(功能层)
 
-- **工具**:`read_file` / `write_file` / `run_shell`(经安全分类 + 审批)。
+- **工具**:`read_file` / `write_file` / `run_shell`(harness 固定生命周期 + 双层安全:renderer 审批闸门 + 主进程兜底)。
 - **多模型**:每个模型可独立配置 `apiKey/baseUrl/model/contextWindow`,在 `models.json`。
 - **项目级(Project)**:按工作目录隔离;会话归属项目。
 - **安全**:沙箱模式(只读/工作区可写/完全访问)+ 审批策略(自动/需要时问/全部确认)+ allowlist。
