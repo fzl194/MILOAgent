@@ -168,3 +168,40 @@ describe('ContextManager.toOpenAIMessages — invariant self-heal', () => {
     expect(out.filter((m) => m.role === 'tool').length).toBe(2) // each assistant keeps its own result
   })
 })
+
+describe('ContextManager.add — system leads the conversation', () => {
+  // Regression: the loop loads existing history first (which does NOT persist the
+  // system prompt), THEN adds the system message. A plain push would land system
+  // behind the prior user/assistant turns — corrupting the order sent to the
+  // model on the 2nd+ turn. system must always unshift to position 0.
+  it('keeps a system message in position 0 even when added after history', () => {
+    const ctx = mkCtx()
+    // Simulate the loop: history first (a prior turn), then system, then the new user msg.
+    ctx.add(msg('user', { content: '查下李白简介' }))
+    ctx.add(msg('assistant', { content: '李白是唐代诗人...' }))
+    ctx.add(msg('system', { content: '你是助手' }))
+    ctx.add(msg('user', { content: '再问一个' }))
+
+    const out = ctx.toOpenAIMessages()
+    expect(out[0].role).toBe('system')
+    expect(out.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
+  })
+
+  it('keeps system first on the very first turn too (history empty)', () => {
+    const ctx = mkCtx()
+    ctx.add(msg('system', { content: '你是助手' }))
+    ctx.add(msg('user', { content: '查下李白简介' }))
+    const out = ctx.toOpenAIMessages()
+    expect(out.map((m) => m.role)).toEqual(['system', 'user'])
+  })
+
+  it('does not reorder non-system messages', () => {
+    const ctx = mkCtx()
+    ctx.add(msg('user', { content: 'a' }))
+    ctx.add(msg('assistant', { content: 'b' }))
+    ctx.add(msg('user', { content: 'c' }))
+    ctx.add(msg('system', { content: 'sys' }))
+    const out = ctx.toOpenAIMessages()
+    expect(out.map((m) => m.content)).toEqual(['sys', 'a', 'b', 'c'])
+  })
+})

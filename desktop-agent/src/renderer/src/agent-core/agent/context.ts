@@ -21,9 +21,21 @@ export class ContextManager {
     this.strategy = strategy
   }
 
-  /** Truth source: append-only. No trimming here. */
+  /** Truth source: append-only. No trimming here.
+   *
+   *  Invariant: a `system` message ALWAYS leads the conversation. The loop loads
+   *  existing history first (which does NOT persist the system prompt), then
+   *  adds the system message — so a plain push would land it BEHIND the prior
+   *  user/assistant turns, corrupting the order sent to the model (system ends
+   *  up mid-conversation). System messages are unshifted to the front to keep
+   *  them in position 0 regardless of when they're added. Non-system messages
+   *  append normally. */
   add(message: Message): void {
-    this.messages.push(message)
+    if (message.role === 'system') {
+      this.messages.unshift(message)
+    } else {
+      this.messages.push(message)
+    }
   }
 
   getMessages(): Message[] {
