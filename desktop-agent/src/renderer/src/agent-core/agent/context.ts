@@ -1,5 +1,6 @@
 import type { Message, OpenAIChatMessage } from '../types'
 import type { ContextStrategy, ContextMetrics } from './context-strategy'
+import type { CompactionDecision } from '../../monitor/types'
 
 /**
  * ContextManager — the in-memory truth source for one turn's conversation.
@@ -44,6 +45,41 @@ export class ContextManager {
     return this.strategy.toView(this.messages)
   }
 
+  /**
+   * Produce the full request bundle in ONE pass — the internal view, the
+   * structured compaction decisions, the wire-format OpenAI messages (self-
+   * healed), and the metrics for the (post-compaction) view. Used by the agent
+   * loop's monitor hook so it doesn't pay twice for view construction.
+   *
+   * Falls back to plain `toView` with empty decisions when the strategy hasn't
+   * opted into `toViewWithDecisions` — so monitoring is additive, never breaks
+   * a strategy that pre-dates it.
+   * See docs/2026-06-15-desktop-agent-运行态监控面板设计.md §② 采集点.
+   */
+  produceRequest(): {
+    view: Message[]
+    decisions: CompactionDecision[]
+    openaiMessages: OpenAIChatMessage[]
+    metrics: ContextMetrics
+    /** How many messages self-heal dropped/stripped when producing the wire
+     *  payload. Non-zero means the actual POST differed from `view` — the
+     *  monitor panel uses this to warn that the displayed view ≠ what was sent. */
+    selfHeal: { strippedCalls: number; strippedResults: number }
+  } {
+    const resolved = this.strategy.toViewWithDecisions
+      ? this.strategy.toViewWithDecisions(this.messages)
+      : { view: this.strategy.toView(this.messages), decisions: [] as CompactionDecision[] }
+    const { messages: openaiMessages, strippedCalls, strippedResults } = this.toOpenAIMessagesFromView(resolved.view)
+    const metrics = this.strategy.metrics(resolved.view)
+    return {
+      view: resolved.view,
+      decisions: resolved.decisions,
+      openaiMessages,
+      metrics,
+      selfHeal: { strippedCalls, strippedResults }
+    }
+  }
+
   /** Between-turn compaction hook (delegates to the strategy). Returns a
    *  compacted message list to replace the truth source, or null to keep it.
    *  No-op unless the strategy implements expensive (LLM) compaction (P2). */
@@ -70,7 +106,22 @@ export class ContextManager {
    * empty) and drop orphaned tool results, logging a warning when it happens.
    */
   toOpenAIMessages(): OpenAIChatMessage[] {
-    const view = this.toView()
+    return this.toOpenAIMessagesFromView(this.toView()).messages
+  }
+
+  /**
+   * Self-heal a (already-compacted) view into the OpenAI chat-completions shape,
+   * enforcing the tool_calls pairing invariant as a final safety net. History
+   * can still be inconsistent (an exception mid-turn, a crash, or pre-existing
+   * corrupted state); rather than send an invalid array and eat an API 400
+   * ("insufficient tool messages following tool_calls message"), we self-heal:
+   * strip orphaned tool_calls (demoting the assistant message to plain text, or
+   * dropping it if empty) and drop orphaned tool results, logging a warning.
+   *
+   * Factored out of toOpenAIMessages so produceRequest() can reuse it on a view
+   * it already built (with decisions), without paying for toView twice.
+   */
+  private toOpenAIMessagesFromView(view: Message[]): { messages: OpenAIChatMessage[]; strippedCalls: number; strippedResults: number } {
     let strippedCalls = 0
     let strippedResults = 0
     const out: OpenAIChatMessage[] = []
@@ -152,6 +203,6 @@ export class ContextManager {
           `history valid (prevents API 400 "insufficient tool messages")`
       )
     }
-    return out
+    return { messages: out, strippedCalls, strippedResults }
   }
 }

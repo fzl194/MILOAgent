@@ -1,4 +1,5 @@
 import type { Message } from '../types'
+import type { CompactionDecision } from '../../monitor/types'
 
 // ---------------------------------------------------------------------------
 // Context management v2 — pluggable "view over truth source".
@@ -77,6 +78,14 @@ export interface Compactor {
   shouldRun(metrics: ContextMetrics, ctx: CompactionContext): boolean
   /** Return a possibly-trimmed view. Pure: does not mutate the input array. */
   run(view: Message[], ctx: CompactionContext): Message[]
+  /**
+   * Optional: run WITH a structured decision record (what was dropped/elided and
+   * why). Default implementations fall back to plain `run` with no decision —
+   * so compactors that don't care about monitoring are unaffected. The strategy's
+   * `toViewWithDecisions` aggregates these into a complete picture for the
+   * monitor panel (see docs/2026-06-15-desktop-agent-运行态监控面板设计.md).
+   */
+  runWithDecision?(view: Message[], ctx: CompactionContext): { view: Message[]; decision?: CompactionDecision }
 }
 
 export function computeMetrics(
@@ -139,19 +148,51 @@ export class ToolResultTrimCompactor implements Compactor {
   }
 
   run(view: Message[]): Message[] {
+    return this.compute(view).view
+  }
+
+  /** Returns the trimmed view plus a structured decision (which message IDs got
+   *  their content elided, and how many characters were folded away). */
+  runWithDecision(view: Message[]): { view: Message[]; decision?: CompactionDecision } {
+    return this.compute(view)
+  }
+
+  private compute(view: Message[]): { view: Message[]; decision?: CompactionDecision } {
     const toolIndexes: number[] = []
     view.forEach((m, i) => {
       if (m.role === 'tool') toolIndexes.push(i)
     })
-    if (toolIndexes.length <= this.keep) return view
+    if (toolIndexes.length <= this.keep) return { view }
+
     const drop = new Set(toolIndexes.slice(0, toolIndexes.length - this.keep))
-    return view.map((m, i) =>
+    const droppedMessageIds: string[] = []
+    let elidedContent = 0
+    const next = view.map((m, i) => {
       // Only elide when it actually shrinks the view — a result shorter than the
       // placeholder would otherwise make the view larger.
-      drop.has(i) && m.content.length > ELIDED_TOOL_RESULT.length
-        ? { ...m, content: ELIDED_TOOL_RESULT }
-        : m
-    )
+      if (drop.has(i) && m.content.length > ELIDED_TOOL_RESULT.length) {
+        droppedMessageIds.push(m.id)
+        elidedContent += m.content.length - ELIDED_TOOL_RESULT.length
+        return { ...m, content: ELIDED_TOOL_RESULT }
+      }
+      return m
+    })
+    // Nothing was actually elided (e.g. every candidate was already shorter than
+    // the placeholder) → behave as a no-op run, consistent with the sibling
+    // compactors which only emit a decision when they changed something.
+    if (droppedMessageIds.length === 0) return { view: next }
+    return {
+      view: next,
+      decision: {
+        compactor: this.name,
+        ran: true,
+        droppedMessageIds,
+        elidedContent,
+        reason: `tool results exceeded keep=${this.keep}; folded ${droppedMessageIds.length} old results`,
+        before: 0, // filled in by the strategy (it has the estimator)
+        after: 0
+      }
+    }
   }
 }
 
@@ -166,12 +207,35 @@ export class CountTrimCompactor implements Compactor {
   }
 
   run(view: Message[], ctx: CompactionContext): Message[] {
+    return this.compute(view, ctx).view
+  }
+
+  runWithDecision(view: Message[], ctx: CompactionContext): { view: Message[]; decision?: CompactionDecision } {
+    return this.compute(view, ctx)
+  }
+
+  private compute(view: Message[], ctx: CompactionContext): { view: Message[]; decision?: CompactionDecision } {
     let out = view
+    const droppedIds: string[] = []
     // Keep at least the system message + one block so we never empty the view.
     while (out.length > ctx.maxMessages && out.length > 1) {
+      const removed = collectDroppedIds(out)
       out = dropOldestBlock(out)
+      droppedIds.push(...removed)
     }
-    return out
+    if (droppedIds.length === 0) return { view: out }
+    return {
+      view: out,
+      decision: {
+        compactor: this.name,
+        ran: true,
+        droppedMessageIds: droppedIds,
+        elidedContent: 0,
+        reason: `message count ${view.length} > max ${ctx.maxMessages}; dropped ${droppedIds.length} messages`,
+        before: 0,
+        after: 0
+      }
+    }
   }
 }
 
@@ -190,15 +254,58 @@ export class TokenBudgetBackstop implements Compactor {
   }
 
   run(view: Message[], ctx: CompactionContext): Message[] {
+    return this.compute(view, ctx).view
+  }
+
+  /** Returns the trimmed view plus a structured decision (which blocks were
+   *  dropped, before/after token estimates). */
+  runWithDecision(view: Message[], ctx: CompactionContext): { view: Message[]; decision?: CompactionDecision } {
+    return this.compute(view, ctx)
+  }
+
+  private compute(view: Message[], ctx: CompactionContext): { view: Message[]; decision?: CompactionDecision } {
+    const before = ctx.estimator.estimate(view)
     let out = view
     const budget = Math.floor(ctx.window * this.ratio)
+    const droppedIds: string[] = []
     let est = ctx.estimator.estimate(out)
     while (est > budget && out.length > 1) {
+      // Capture what dropOldestBlock is about to remove so the decision records it.
+      const removed = collectDroppedIds(out)
       out = dropOldestBlock(out)
+      droppedIds.push(...removed)
       est = ctx.estimator.estimate(out)
     }
-    return out
+    if (droppedIds.length === 0) return { view: out }
+    return {
+      view: out,
+      decision: {
+        compactor: this.name,
+        ran: true,
+        droppedMessageIds: droppedIds,
+        elidedContent: 0, // budget backstop drops blocks outright, never elides
+        reason: `token estimate ${before} > budget ${budget} (${this.ratio}×window); dropped ${droppedIds.length} messages`,
+        before,
+        after: est
+      }
+    }
   }
+}
+
+/** Identifies the message id(s) that dropOldestBlock will remove on the next
+ *  call, WITHOUT removing them — used to populate the decision record. Mirrors
+ *  dropOldestBlock's block logic exactly (single message OR assistant+tool run). */
+function collectDroppedIds(messages: Message[]): string[] {
+  if (messages.length === 0) return []
+  const start = messages[0]!.role === 'system' ? 1 : 0
+  if (start >= messages.length) return []
+  let end = start + 1
+  if (messages[start]!.role === 'assistant' && messages[start]!.toolCalls?.length) {
+    while (end < messages.length && messages[end]!.role === 'tool') end++
+  }
+  const ids: string[] = []
+  for (let i = start; i < end; i++) ids.push(messages[i]!.id)
+  return ids
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +317,16 @@ export interface ContextStrategy {
   /** Produce the bounded view of the full history that will be sent to the LLM.
    *  Synchronous + cheap — only rule-based compactors run here. */
   toView(full: Message[]): Message[]
+  /**
+   * Optional: produce the bounded view PLUS a structured record of every
+   * compaction decision that shaped it. The monitor panel uses this to show
+   * "what was folded / dropped and why" alongside the request view
+   * (see docs/2026-06-15-desktop-agent-运行态监控面板设计.md).
+   *
+   * Default implementations fall back to `{ view: this.toView(full), decisions: [] }`
+   * — so strategies that don't participate in monitoring keep working unchanged.
+   */
+  toViewWithDecisions?(full: Message[]): { view: Message[]; decisions: CompactionDecision[] }
   /** Metrics for the full history (for UI / observability / threshold checks). */
   metrics(full: Message[]): ContextMetrics
   /** Between-turn hook for EXPENSIVE compaction (LLM summarization). No-op in
@@ -257,14 +374,47 @@ export class DefaultContextStrategy implements ContextStrategy {
   }
 
   toView(full: Message[]): Message[] {
-    // Thread the view through each compactor; recompute metrics after each so a
-    // later compactor sees the post-trim state. Compactors are pure functions.
+    return this.toViewWithDecisions(full).view
+  }
+
+  /**
+   * Threads the view through each compactor, aggregating each step's decision.
+   * This is now the canonical path — `toView` is a thin wrapper around it so the
+   * two never drift. Compactors that don't implement `runWithDecision` (or where
+   * it returns no decision) contribute nothing to the decisions array — the
+   * monitor panel simply shows fewer rows for those strategies.
+   *
+   * `before` / `after` token estimates are filled here (the strategy owns the
+   * estimator); compactors that already set them (TokenBudgetBackstop,
+   * CountTrimCompactor's before/after are filled below) are honored, while
+   * ToolResultTrimCompactor leaves them at 0 for the strategy to populate.
+   */
+  toViewWithDecisions(full: Message[]): { view: Message[]; decisions: CompactionDecision[] } {
     let view = [...full]
+    const decisions: CompactionDecision[] = []
     for (const c of this.compactors) {
       const m = computeMetrics(view, this.estimator, this.ctx.window)
-      if (c.shouldRun(m, this.ctx)) view = c.run(view, this.ctx)
+      if (!c.shouldRun(m, this.ctx)) continue
+
+      const beforeTokens = this.estimator.estimate(view)
+      if (c.runWithDecision) {
+        const { view: next, decision } = c.runWithDecision(view, this.ctx)
+        view = next
+        if (decision) {
+          // Fill before/after if the compactor left them at 0 (ToolResultTrimCompactor
+          // doesn't have the estimator; the strategy does). Trust non-zero values.
+          const afterTokens = this.estimator.estimate(view)
+          decisions.push({
+            ...decision,
+            before: decision.before || beforeTokens,
+            after: decision.after || afterTokens
+          })
+        }
+      } else {
+        view = c.run(view, this.ctx)
+      }
     }
-    return view
+    return { view, decisions }
   }
 
   // P2 seam: override this to perform an LLM handoff summary between turns.

@@ -153,3 +153,84 @@ describe('RoughTokenEstimator', () => {
     expect(big).toBeGreaterThan(small)
   })
 })
+
+// --- DefaultContextStrategy.toViewWithDecisions (monitoring) -----------------
+describe('DefaultContextStrategy.toViewWithDecisions', () => {
+  it('returns the same view as toView, plus an empty decisions array when no compactor runs', () => {
+    const s = new DefaultContextStrategy({ contextWindow: 1_000_000, maxMessages: 1000 })
+    const full = [sys(), u('hi'), asst('hello')]
+    const { view, decisions } = s.toViewWithDecisions!(full)
+    expect(view.map((m) => m.content)).toEqual(['SYS', 'hi', 'hello'])
+    expect(decisions).toEqual([])
+  })
+
+  it('records a tool-result-trim decision with the elided message IDs and content length', () => {
+    const s = new DefaultContextStrategy({
+      contextWindow: 800,
+      maxMessages: 1000,
+      keepRecentToolResults: 2
+    })
+    const big = 'word '.repeat(100)
+    const full = [
+      asstTC(['a', 'b', 'c', 'd']),
+      mk('tool', { id: 'msg-a', toolCallId: 'a', content: big }),
+      mk('tool', { id: 'msg-b', toolCallId: 'b', content: big }),
+      mk('tool', { id: 'msg-c', toolCallId: 'c', content: big }),
+      mk('tool', { id: 'msg-d', toolCallId: 'd', content: big })
+    ]
+    const { view, decisions } = s.toViewWithDecisions!(full)
+    const trim = decisions.find((d) => d.compactor === 'tool-result-trim')
+    expect(trim).toBeDefined()
+    expect(trim!.ran).toBe(true)
+    expect(trim!.droppedMessageIds).toContain('msg-a')
+    expect(trim!.droppedMessageIds).toContain('msg-b')
+    expect(trim!.elidedContent).toBeGreaterThan(0)
+    // before/after populated by the strategy (compactor left them 0)
+    expect(trim!.before).toBeGreaterThan(0)
+    expect(trim!.after).toBeGreaterThan(0)
+    expect(trim!.after).toBeLessThan(trim!.before)
+    // view matches what plain toView would produce
+    expect(view).toEqual(s.toView(full))
+  })
+
+  it('records a token-budget decision with before/after estimates and dropped IDs', () => {
+    const s = new DefaultContextStrategy({ contextWindow: 200, maxMessages: 1000 })
+    const big = 'word '.repeat(60)
+    const full = [
+      sys(),
+      mk('user', { id: 'm1', content: big }),
+      mk('user', { id: 'm2', content: big }),
+      mk('user', { id: 'm3', content: big }),
+      mk('user', { id: 'm4', content: big })
+    ]
+    const { view, decisions } = s.toViewWithDecisions!(full)
+    const budget = decisions.find((d) => d.compactor === 'token-budget')
+    expect(budget).toBeDefined()
+    expect(budget!.droppedMessageIds.length).toBeGreaterThan(0)
+    expect(budget!.before).toBeGreaterThan(budget!.after)
+    expect(est.estimate(view)).toBeLessThanOrEqual(Math.floor(200 * 0.8))
+  })
+
+  it('is the canonical path: toView delegates to toViewWithDecisions', () => {
+    const s = new DefaultContextStrategy({ contextWindow: 800, maxMessages: 1000, keepRecentToolResults: 1 })
+    const big = 'word '.repeat(100)
+    const full = [asstTC(['a', 'b']), tool('a', big), tool('b', big)]
+    expect(s.toView(full)).toEqual(s.toViewWithDecisions!(full).view)
+  })
+
+  it('a compactor with no runWithDecision still contributes (no decision row, but runs)', () => {
+    // Custom compactor implementing only run() — simulates a third-party / future
+    // compactor that hasn't opted into monitoring yet.
+    const naiveCompactor: import('./context-strategy').Compactor = {
+      name: 'naive',
+      shouldRun: () => true,
+      run: (view) => view // no-op
+    }
+    const s = new DefaultContextStrategy({ contextWindow: 1_000_000 })
+    ;(s as unknown as { compactors: import('./context-strategy').Compactor[] }).compactors = [naiveCompactor]
+    const full = [sys(), u('hi')]
+    const { view, decisions } = s.toViewWithDecisions!(full)
+    expect(view.map((m) => m.content)).toEqual(['SYS', 'hi']) // ran, no change
+    expect(decisions.find((d) => d.compactor === 'naive')).toBeUndefined()
+  })
+})
