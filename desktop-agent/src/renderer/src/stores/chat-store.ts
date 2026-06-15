@@ -8,7 +8,7 @@ import type {
   ApprovalDecision,
   ApprovalSource
 } from '../agent-core/types'
-import { AgentLoop, type LoopDoneEvent, type AgentSafety } from '../agent-core/agent/loop'
+import { AgentLoop, type LoopDoneEvent, type AgentSafety, type AgentLoopHooks } from '../agent-core/agent/loop'
 import { DefaultContextStrategy, DEFAULT_CONTEXT_WINDOW } from '../agent-core/agent/context-strategy'
 import { LLMProvider } from '../agent-core/llm/provider'
 import { ElectronToolExecutor } from '../adapters/electron-tool-executor'
@@ -17,8 +17,19 @@ import { useModelStore } from './model-store'
 import { useStatsStore } from './stats-store'
 import { useProjectStore } from './project-store'
 import { usePermissionStore } from './permission-store'
+import { useConfigStore } from './config-store'
 import { ALL_TOOLS } from '../agent-core/tools/definitions'
+import { buildToolRegistry } from '../agent-core/tools/harness'
 import { getEffectiveConfig, type EffectiveConfig } from '../lib/effective-config'
+import { getMonitorBus } from '../monitor/bus'
+import { startDefaultPersistence } from '../monitor/persistence'
+import type {
+  DimKey,
+  MonitorEnvelope,
+  RequestSnapshot,
+  TokenUsageEvent,
+  TurnLifecycleEvent
+} from '../monitor/types'
 
 function estimateTokens(text: string): number {
   const chinese = (text.match(/[一-鿿]/g) || []).length
@@ -61,6 +72,65 @@ async function safeAppendTrace(pid: string, sid: string, event: object): Promise
   if (!res.success) {
     console.warn('[trace] failed to append event', res.error, event)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Monitor bus wiring. All publish() calls go through getMonitorBus(); the bus
+// is lazy — when nothing is subscribed AND no persistent consumer is attached,
+// the payload factory is never invoked (zero cost when monitoring is off).
+// Snapshots are stamped with sessionId/projectId here (the loop emits with an
+// empty sessionId because it doesn't own that identity — chat-store does).
+// ---------------------------------------------------------------------------
+
+/** Build the stable envelope shared by every event for one (callId, dimension). */
+function envelope(
+  dim: DimKey,
+  ctx: { turnId: string; callId: string; round: number; sessionId: string },
+  extra?: Record<string, unknown>
+): MonitorEnvelope {
+  return { dimension: dim, turnId: ctx.turnId, callId: ctx.callId, round: ctx.round, sessionId: ctx.sessionId, ts: Date.now(), details: extra }
+}
+
+/** Publish the full request snapshot to BOTH request_view and context_metrics.
+ *  The two dimensions share a payload (context_metrics is the metrics slice),
+ *  so we publish the same snapshot object; the persistent subscriber writes it
+ *  once (it no-ops on context_metrics to avoid double-writing). */
+function publishRequestSnapshot(sid: string, snapshot: RequestSnapshot): void {
+  const ctx = { turnId: snapshot.turnId, callId: snapshot.callId, round: snapshot.round, sessionId: sid }
+  const bus = getMonitorBus()
+  // Heavy payload: the factory only runs when a subscriber exists.
+  bus.publish('request_view', envelope('request_view', ctx), () => ({ ...snapshot, sessionId: sid }))
+  bus.publish('context_metrics', envelope('context_metrics', ctx), () => ({
+    callId: snapshot.callId,
+    turnId: snapshot.turnId,
+    round: snapshot.round,
+    metrics: snapshot.metrics,
+    decisions: snapshot.decisions
+  }))
+}
+
+function publishToolCall(sid: string, turnId: string, data: ToolExecutedEventData, callId: string, round: number): void {
+  // The envelope's callId is the PARENT LLM call (so clicking a tool_call row in
+  // the panel selects the request that triggered it). The tool's own id rides in
+  // details.toolCallId — using it as the envelope callId would make the row
+  // un-selectable (no request_view shares a toolCallId).
+  getMonitorBus().publish(
+    'tool_call',
+    envelope('tool_call', { turnId, callId, round, sessionId: sid }, { toolCallId: data.toolCallId }),
+    () => ({
+      ...data,
+      parentCallId: callId,
+      sessionId: sid
+    })
+  )
+}
+
+function publishTokenUsage(sid: string, e: TokenUsageEvent): void {
+  getMonitorBus().publish('token_usage', envelope('token_usage', { turnId: e.turnId, callId: e.callId, round: e.round, sessionId: sid }), () => e)
+}
+
+function publishLifecycle(sid: string, e: TurnLifecycleEvent): void {
+  getMonitorBus().publish('turn_lifecycle', envelope('turn_lifecycle', { turnId: e.turnId, callId: e.callId, round: e.round, sessionId: sid }, { stage: e.stage, reason: e.reason }), () => e)
 }
 
 
@@ -235,6 +305,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Wrap initialization (trace-meta read/append + loop construction) AND the
     // loop in one try — a throw here used to bypass the catch and leave
     // isStreaming/streamingSessionId stuck on. The catch finalizes any path.
+    // Declared outside the try so the finally can tear it down on every exit path.
+    // Async: teardown awaits bus.drain() so in-flight snapshot/trace writes finish
+    // before the turn is reported done (prevents orphan snapshots on session delete).
+    let stopPersistence: () => Promise<void> = async () => {}
     try {
 
     // Ensure a session_meta row exists (written once per session)
@@ -279,6 +353,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // user switches project mid-turn (approval wait).
     executor.setCwd(effective.cwd)
 
+    // Start the monitor bus's persistent subscriber for THIS turn. It routes
+    // request_view/context_metrics → snapshot files and the other dimensions →
+    // trace. Teardown happens in the finally/catch paths below so a torn-down
+    // turn stops writing. (No-op cost when nothing publishes — but we always
+    // start it so monitoring is on by default for dev.)
+    stopPersistence = startDefaultPersistence({ projectId, sessionId })
+
+    // Monitor hooks handed to the loop. onRequestReady fires once per round
+    // with the exact view + compaction decisions; onLifecycle fires on
+    // started/aborted/finished. Both publish to the bus; the bus swallows any
+    // subscriber error, so monitoring can never break the turn.
+    let currentRound = 0
+    const hooks: AgentLoopHooks = {
+      onRequestReady: (snapshot) => {
+        currentRound = snapshot.round
+        publishRequestSnapshot(sessionId, snapshot)
+      },
+      onLifecycle: (stage, lc) => {
+        currentRound = lc.round
+        publishLifecycle(sessionId, {
+          callId: lc.callId,
+          turnId,
+          round: lc.round,
+          sessionId,
+          ts: Date.now(),
+          stage,
+          reason: lc.reason,
+          modelConfigId: modelConfig.id
+        })
+      }
+    }
+
+    // P1 harness rollout: when the flag is on, read_file runs through the
+    // harness (tools/harness/); everything else stays on the legacy executor.
+    const toolHarnessEnabled = useConfigStore.getState().config.toolHarness?.enabled === true
     const loop = new AgentLoop(
       { apiKey: modelConfig.apiKey, baseUrl: modelConfig.baseUrl, model: modelConfig.model },
       executor,
@@ -286,7 +395,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       history,
       buildSafety(turnId, effective),
       controller.signal,
-      contextStrategy
+      contextStrategy,
+      hooks,
+      modelConfig.id,
+      toolHarnessEnabled ? buildToolRegistry() : undefined
     )
 
       for await (const event of loop.run(text, turnId)) {
@@ -353,6 +465,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               startedAt: Date.now() - d.durationMs,
               durationMs: d.durationMs
             })
+            // Mirror to the monitor bus (tool_call dimension). The persistent
+            // subscriber will append this to the trace as a monitor-tagged row.
+            publishToolCall(sessionId, turnId, d, lastCallId, currentRound)
             break
           }
           case 'done': {
@@ -366,6 +481,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
             turnOutputTokens += usage.outputTokens
             if (usageSource === 'estimated') turnUsageSource = 'estimated'
             else if (usageSource === 'partial' && turnUsageSource === 'api') turnUsageSource = 'partial'
+
+            // Mirror per-round usage to the monitor bus (token_usage dimension).
+            publishTokenUsage(sessionId, {
+              callId: d.callId,
+              turnId,
+              round: d.round,
+              sessionId,
+              ts: Date.now(),
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              totalTokens: usage.totalTokens,
+              cachedTokens: usage.cachedTokens,
+              usageSource,
+              modelConfigId: modelConfig.id
+            })
 
             // Mirror assistant messages (tagged with modelConfigId + reasoning snapshot)
             // into currentMessages. Capture reasoning BEFORE it's cleared below.
@@ -520,6 +650,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       set({ isStreaming: false, streamingSessionId: null, currentText: '', currentReasoning: '', abortController: null })
       await sessionStore.saveCurrentMessages(sessionId)
+    } finally {
+      // Always tear down this turn's monitor persistence subscription so a
+      // finished/stopped/errored turn stops writing snapshots + trace rows.
+      // Awaited so in-flight writes complete (prevents orphan snapshots).
+      await stopPersistence()
     }
   },
 

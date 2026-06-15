@@ -107,6 +107,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await window.electronAPI.deleteTrace(projectOfDeleted ?? '', id)
     await window.electronAPI.deleteSessionRules(id)
     await window.electronAPI.pruneStatsBySession(projectOfDeleted ?? '', id)
+    // Cascade: also drop this session's request snapshots (monitor panel replay data).
+    await window.electronAPI.snapshotDeleteSession(projectOfDeleted ?? '', id)
 
     const remaining = get().sessions.filter((s) => s.id !== id)
     // Drop the cache entry; move nextActive to the same project's most-recent,
@@ -148,6 +150,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     for (const s of doomed) {
       await window.electronAPI.deleteSessionMessages(s.id)
       await window.electronAPI.deleteSessionRules(s.id)
+      await window.electronAPI.snapshotDeleteSession(projectId, s.id)
     }
     const remaining = sessions.filter((s) => s.projectId !== projectId)
     const cacheWithout = { ...get().messagesBySession }

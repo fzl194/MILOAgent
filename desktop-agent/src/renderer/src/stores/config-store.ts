@@ -10,7 +10,12 @@ const DEFAULT_CONFIG: AgentConfig = {
   systemPrompt: '',
   // Personal default leans safe: writes and dangerous actions both ask first.
   sandbox: 'workspace-write',
-  approvalPolicy: 'on-request'
+  approvalPolicy: 'on-request',
+  // P1 harness rollout: off by default so behavior is unchanged until toggled.
+  toolHarness: { enabled: false },
+  // P0 context-org: default agent identity off → system prompt stays
+  // byte-identical to legacy until toggled. P1 will flip this.
+  identity: { enabled: false }
 }
 
 const SANDBOX_VALUES = new Set(['read-only', 'workspace-write', 'full-access'])
@@ -29,7 +34,19 @@ function mergeConfig(c: Record<string, any> | null | undefined): AgentConfig {
     approvalPolicy:
       typeof c.approvalPolicy === 'string' && POLICY_VALUES.has(c.approvalPolicy)
         ? (c.approvalPolicy as ApprovalPolicy)
-        : DEFAULT_CONFIG.approvalPolicy
+        : DEFAULT_CONFIG.approvalPolicy,
+    toolHarness: {
+      enabled:
+        typeof c.toolHarness?.enabled === 'boolean'
+          ? c.toolHarness.enabled
+          : (DEFAULT_CONFIG.toolHarness?.enabled ?? false)
+    },
+    identity: {
+      enabled:
+        typeof c.identity?.enabled === 'boolean'
+          ? c.identity.enabled
+          : (DEFAULT_CONFIG.identity?.enabled ?? false)
+    }
   }
 }
 

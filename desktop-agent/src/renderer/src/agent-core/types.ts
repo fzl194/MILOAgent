@@ -188,10 +188,27 @@ export interface ToolExecutedEventData {
 }
 
 // ===== Agent Config =====
+// P1 rollout flag for the tool harness. Default off; when on, read_file runs
+// through the new harness (tools/harness/), everything else stays on the
+// legacy executor. See docs/2026-06-15-工具层harness演进与安全.md.
+export interface ToolHarnessConfig {
+  enabled: boolean
+}
+
+// P0 context-org: a default agent identity (role / tool norms / safety) prepended
+// to the system prompt when enabled. Default OFF → the system prompt stays
+// byte-identical to legacy until toggled; P1 will flip the default. See
+// docs/2026-06-15-desktop-agent-上下文组织管理演进.md.
+export interface IdentityConfig {
+  enabled: boolean
+}
+
 export interface AgentConfig {
   systemPrompt: string
   sandbox: SandboxMode
   approvalPolicy: ApprovalPolicy
+  toolHarness?: ToolHarnessConfig
+  identity?: IdentityConfig
 }
 
 // ===== OpenAI API Types =====
