@@ -117,6 +117,11 @@ export class ContextManager {
    * tool_calls (demoting the assistant message to plain text, or dropping it if
    * empty) and drop orphaned tool results, logging a warning when it happens.
    */
+  /** @deprecated Test/lightweight entry. Production MUST use produceRequest(),
+   *  which yields the same wire messages PLUS the compaction decisions /
+   *  self-heal / metrics the monitor consumes — calling this instead silently
+   *  drops those signals. Kept because context.test.ts exercises the self-heal
+   *  invariant through it. */
   toOpenAIMessages(): OpenAIChatMessage[] {
     return this.toOpenAIMessagesFromView(this.toView()).messages
   }

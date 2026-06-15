@@ -16,7 +16,16 @@ const cache = new WeakMap<ZodTypeAny, JsonSchema7>()
 export function zodToJsonSchema(schema: ZodTypeAny): JsonSchema7 {
   const hit = cache.get(schema)
   if (hit) return hit
-  const out = toJSONSchema(schema) as JsonSchema7
+  const raw = toJSONSchema(schema) as JsonSchema7
+  // Strip the Draft 2020-12 document marker (`$schema`) and the strict
+  // `additionalProperties:false` zod/v4 emits by default. Some OpenAI-compatible
+  // backends (GLM/DeepSeek function calling) reject requests carrying extra
+  // schema fields, and the legacy hand-written tool definitions never set them —
+  // this restores wire-schema parity. (Top-level fields; nested object props
+  // would need the same treatment when a tool actually uses them.)
+  const out: JsonSchema7 = { ...raw }
+  delete out.$schema
+  delete out.additionalProperties
   cache.set(schema, out)
   return out
 }

@@ -162,8 +162,20 @@ export class AgentLoop {
       // the request so the next round sees the compacted context.
       // Strategy contract: maybeCompact MUST protect the latest assistant +
       // tool-results block (don't summarise results the model hasn't consumed).
-      const compacted = await this.context.maybeCompact()
-      if (compacted) this.context.replaceMessages(compacted)
+      try {
+        const compacted = await this.context.maybeCompact()
+        if (compacted) this.context.replaceMessages(compacted)
+      } catch (e) {
+        // maybeCompact() can await (P2 LLM handoff summary) and thus throw
+        // (network/timeout/abort). Don't let it escape the generator and leave a
+        // turn with no terminal signal. Abort → end gracefully; any other
+        // failure → fall back to the un-compacted context and continue.
+        if (this.signal?.aborted) {
+          this.emitLifecycle('aborted', { round, callId, reason: '用户停止' })
+          return
+        }
+        console.error('[loop] maybeCompact failed; continuing with un-compacted context', e)
+      }
 
       // Second abort check AFTER the async compaction: maybeCompact() can await
       // (P2 LLM handoff summary), and the user may have stopped during that
@@ -258,13 +270,24 @@ export class AgentLoop {
               // be compared against an absolute project root and wrongly flagged
               // as outside the workspace.
               const cwd = this.safety?.ctx.cwd
+              // Home-dir / env-var prefixes (~/foo, $HOME/foo, %USERPROFILE%/foo)
+              // are neither workspace-relative nor a form we expand. Detecting
+              // them here (rather than prepending cwd) prevents a silent garbage
+              // path like "/workspace/~/foo": the path flows through unchanged,
+              // classify() then flags it outside the workspace → dangerous → the
+              // user is asked instead of getting a wrong silent write.
+              const hasEnvPrefix =
+                tc.name === 'write_file' &&
+                typeof parsedArgs.path === 'string' &&
+                /^[~$%]/.test(parsedArgs.path)
               if (
                 tc.name === 'write_file' &&
                 cwd &&
                 typeof parsedArgs.path === 'string' &&
                 !/^[A-Za-z]:[\\/]/.test(parsedArgs.path) && // Windows drive-absolute
                 !/^[\\/]/.test(parsedArgs.path) && // leading slash/backslash
-                !parsedArgs.path.startsWith('\\\\') // UNC
+                !parsedArgs.path.startsWith('\\\\') && // UNC
+                !hasEnvPrefix // ~/$/% : don't prepend cwd (see note above)
               ) {
                 parsedArgs = { ...parsedArgs, path: cwd.replace(/\/+$/, '') + '/' + parsedArgs.path }
               }

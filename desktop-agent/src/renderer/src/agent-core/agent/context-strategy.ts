@@ -168,11 +168,15 @@ export class ToolResultTrimCompactor implements Compactor {
     const droppedMessageIds: string[] = []
     let elidedContent = 0
     const next = view.map((m, i) => {
+      // Guard content.length: a tool message with missing/empty content (typed
+      // non-optional, but defensively tolerated elsewhere) must not throw and
+      // crash the whole toView pipeline mid-turn.
+      const len = m.content?.length ?? 0
       // Only elide when it actually shrinks the view — a result shorter than the
       // placeholder would otherwise make the view larger.
-      if (drop.has(i) && m.content.length > ELIDED_TOOL_RESULT.length) {
+      if (drop.has(i) && len > ELIDED_TOOL_RESULT.length) {
         droppedMessageIds.push(m.id)
-        elidedContent += m.content.length - ELIDED_TOOL_RESULT.length
+        elidedContent += len - ELIDED_TOOL_RESULT.length
         return { ...m, content: ELIDED_TOOL_RESULT }
       }
       return m

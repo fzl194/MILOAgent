@@ -157,8 +157,13 @@ function buildSafety(turnId: string, effective: EffectiveConfig): AgentSafety {
       sandbox: effective.sandbox,
       workspaceRoot: effective.workspaceRoot,
       cwd: effective.cwd,
-      // Unified rules: session scope first, then project scope.
-      rules: usePermissionStore.getState().merged(effective.projectRules)
+      // Unified rules: session scope first, then project scope. Defer merging
+      // to call-time via a getter so a "remember" approval added DURING this
+      // turn is visible to the next tool call's classifier — a static snapshot
+      // taken at turn-build time would miss same-turn session rules.
+      get rules() {
+        return usePermissionStore.getState().merged(effective.projectRules)
+      }
     },
     policy: effective.approvalPolicy,
     gate: {

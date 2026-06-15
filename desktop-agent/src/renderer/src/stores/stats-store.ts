@@ -38,7 +38,16 @@ export const useStatsStore = create<StatsState>((set) => ({
   },
 
   recordEvent: async (pid, e) => {
-    await window.electronAPI.appendStat(pid, e)
+    // Stats are observational — a write failure must never surface as a chat
+    // error or leave disk/memory inconsistent. Write first; only update the
+    // in-memory view if the write succeeded. Swallow + log on failure (the
+    // event is absent from the panel, but a successful turn stays successful).
+    try {
+      await window.electronAPI.appendStat(pid, e)
+    } catch (err) {
+      console.error('[stats] appendStat failed; skipping in-memory update', err)
+      return
+    }
     set((st) => ({
       events: [...st.events, e],
       eventsByProject: { ...st.eventsByProject, [pid]: [...(st.eventsByProject[pid] ?? []), e] }

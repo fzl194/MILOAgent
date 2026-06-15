@@ -219,6 +219,10 @@ const READ_MAX_BYTES = 2 * 1024 * 1024 // 2 MB; larger files are refused whole.
 // Device / special files that must never be read as text. Windows reserves
 // CON/PRN/AUX/NUL/COM1-9/LPT1-9 as the final path segment; Unix uses /dev/*.
 function isDevicePath(p: string): boolean {
+  // Win32 raw device/NT namespaces (\\.\PhysicalDrive0, \\?\C:) and the console
+  // aliases CONIN$/CONOUT$ can read/write raw disks/console — reject outright,
+  // before the reserved-name segment check below.
+  if (/^\\\\[.?]\\/.test(p) || /^(CONIN|CONOUT)\$/i.test(p)) return true
   const seg = p.replace(/\\/g, '/').split('/').pop() ?? ''
   if (process.platform === 'win32') {
     return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(seg)
@@ -662,7 +666,12 @@ ipcMain.handle('data:clearAll', async () => {
     await writeJson(join(DATA_DIR(), 'config.json'), {
       systemPrompt: '',
       sandbox: 'workspace-write',
-      approvalPolicy: 'on-request'
+      approvalPolicy: 'on-request',
+      // Restore the COMPLETE AgentConfig so the file (the single source of
+      // truth) holds every field the store self-heals from — omitting these
+      // left a partial file that only recovered via mergeConfig on next load.
+      toolHarness: { enabled: false },
+      identity: { enabled: false }
     })
     // NOTE: models.json is intentionally left untouched.
     return { success: true }

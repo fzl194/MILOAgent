@@ -25,8 +25,14 @@ export const usePermissionStore = create<PermissionState>((set, get) => ({
   sessionRules: [],
 
   loadForSession: async (sid) => {
-    if (get().activeSessionId === sid) return
+    const prev = get().activeSessionId
+    if (prev === sid) return
     const res = await window.electronAPI.readSessionRules(sid)
+    // Concurrency guard: a rapid A→B session switch can let A's IPC resolve
+    // after B's, overwriting B's rules with A's. If the active session changed
+    // to something other than what we're loading, this result is stale — bail.
+    const nowActive = get().activeSessionId
+    if (nowActive !== prev && nowActive !== sid) return
     set({ activeSessionId: sid, sessionRules: (res.data as PermissionRule[]) || [] })
   },
 

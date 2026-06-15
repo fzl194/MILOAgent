@@ -126,7 +126,7 @@ npm run test:watch   # 监听模式
 
 ### 6.4 工具层 harness(本项目遵循,2026-06-15 起;详见 docs/2026-06-15-工具层harness演进与安全.md)
 - 工具走固定生命周期(校验→归一化→授权→执行→整形,可观测贯穿),共用 harness 拥有;每工具只声明定制(inputSchema/checkPermissions/call/maxResultSizeChars + isReadOnly/isConcurrencySafe 元数据),关注点 co-locate 到该工具模块。契约对齐 Claude Code 源码 `src/Tool.ts`(同级别目录 `claude-code-main/`),提示词描述与参数约束与之保持一致。
-- **安全双层(本项目特有,因无内核沙箱,不可让步)**:① renderer 审批闸门(classify→decide,deny>ask>allow 首次匹配,危险一律问、永不自动/记忆);② **主进程 defense-in-depth 兜底**——每个 IPC handler 重新校验已批准的调用,工作区外写/设备文件/超限一律拒,即使 renderer 被绕过也不越界。
+- **安全双层(本项目特有,因无内核沙箱,不可让步)**:① renderer 审批闸门(classify→decide,deny>ask>allow 首次匹配,危险一律问、永不自动/记忆;**解释器内联代码(`-e`/`-c`)、shell 元字符链、高危 base 命令一律强制问,永不自动/记忆**)——直面 prompt injection 的主防线;② **主进程 defense-in-depth 兜底(逐工具落地,非一刀切)**——`read_file` 的 IPC handler **已就位**(设备文件拒绝含 `\\.\`/`\\?\`/CONIN$、canonicalize 解符号链接、大小上限,即使 renderer 被绕过也不越界);**`write_file` / `run_shell` 的主进程兜底列为 P2 待办**,当前仅依赖 renderer 闸门。改安全层时以 renderer 闸门为主防线、主进程兜底按工具逐步补。
 - 改工具时:安全以本双层为准,**不照搬** Claude Code 的 bypass/无条件 allow;暂不引入 tree-sitter AST、hook 系统、并行调度(留缝,不写死)。
 
 ---

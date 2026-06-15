@@ -137,13 +137,39 @@ const DANGEROUS: { re: RegExp; label: string }[] = [
   { re: /\biex\b|\bInvoke-Expression\b/i, label: 'PowerShell 动态执行' },
   // Long-flag / PowerShell equivalents of the short-form dangerous patterns.
   { re: /\brm\b[^|;&]*(-{1,2}(recursive|force|rf|fr|r|f)\b|--recursive|--force)/, label: 'rm 递归/强制删除' },
-  { re: /\bRemove-Item\b[^|;&]*(-Recurse|-Force)/i, label: 'PowerShell 递归/强制删除' }
+  { re: /\bRemove-Item\b[^|;&]*(-Recurse|-Force)/i, label: 'PowerShell 递归/强制删除' },
+  // Interpreters executing INLINE code — an arbitrary code-execution primitive.
+  // (Running a script FILE like `node x.js` is covered by HIGH_RISK_BASE below:
+  // it stays 'write' but is never auto-run/remembered.) Inline -e/-c/-r bypass
+  // the base-command check, so they must be caught here as dangerous.
+  { re: /\b(node|deno|bun)\s+(-\w+\s+)*-e\b/, label: '解释器内联执行(node -e 等)' },
+  { re: /\b(python[23]?|py)\s+(-\w+\s+)*-c\b/, label: '解释器内联执行(python -c)' },
+  { re: /\b(ruby|perl)\s+(-\w+\s+)*-e\b/, label: '解释器内联执行(ruby/perl -e)' },
+  { re: /\bphp\s+(-\w+\s+)*-r\b/, label: 'PHP 内联执行(-r)' },
+  { re: /\b(bash|sh|zsh|ksh|fish)\s+(-\w+\s+)*-c\b/, label: 'shell -c 内联执行' },
+  { re: /\b(powershell|pwsh)\s+(-\w+\s+)*-(Command|c)\b/i, label: 'PowerShell -Command 内联' },
+  { re: /\bcmd\s+(-\w+\s+)*\/c\b/i, label: 'cmd /c 内联执行' },
+  // Destructive copy/move/archive that bypass the rm-style detection.
+  { re: /\bcp\b[^|;&]*\/dev\/null/, label: 'cp 清空文件(/dev/null)' },
+  { re: /\btar\b[^|;&]*--remove-files/, label: 'tar 归档后删除源文件' },
+  { re: /\bzip\b[^|;&]*\s-m\b/, label: 'zip -m 移动(删源)' },
+  { re: /\btee\b[^|;&]*\/dev\/(sd|nvme|hd|disk)/, label: 'tee 写块设备' },
+  // Disk / ownership / permission utilities (no safe auto-run form).
+  { re: /\b(diskpart|cipher|takeown|icacls)\b/i, label: '磁盘/权限危险操作' },
+  { re: /\bClear-Content\b/i, label: 'PowerShell 清空文件' },
+  { re: /\bStart-Process\b/i, label: 'PowerShell 启动进程' }
 ]
 
 // High-risk base commands: even if a specific dangerous pattern doesn't fire
 // (e.g. an unusual flag spelling), an allow rule must NOT auto-run these — they
 // always require asking. Defense-in-depth against classifier gaps.
-const HIGH_RISK_BASE = /^(sudo\s+)?(rm|del|rmdir|format|mkfs|dd|shutdown|reboot|halt|poweroff|Remove-Item|Invoke-Expression|iex)\b/i
+// High-risk base commands: an allow rule must NOT auto-run these and (via the
+// force-ask in decide) they always ask even under the 'auto' policy. Expanded
+// beyond rm/format/… to include INTERPRETERS (node/python/ruby/perl/bash/…):
+// a remembered interpreter rule would be a universal code-exec primitive
+// (`node x.js` remembered → `node -e "evil"` would otherwise match and run).
+// Defense-in-depth against prompt injection + classifier gaps.
+const HIGH_RISK_BASE = /^(sudo\s+)?(rm|del|rmdir|format|mkfs|dd|shutdown|reboot|halt|poweroff|Remove-Item|Invoke-Expression|iex|node|deno|bun|python[23]?|py|ruby|perl|php|bash|sh|zsh|ksh|fish|powershell|pwsh|cmd|Start-Process)\b/i
 
 // Commands that reach the network (downloads, installs, remote git).
 const NETWORK: RegExp[] = [
@@ -184,13 +210,22 @@ export function classify(
 
   if (name === 'write_file') {
     const path = String(args.path ?? '')
+    // No workspace root configured → no confinement boundary. Fail-closed:
+    // treat as dangerous (always ask) rather than silently unbounded. The
+    // default project (dirPath=null) lands here; setting a project dir yields a
+    // real boundary and the 'write' classification with remember-patterns.
+    // (isInsideWorkspace still returns true for an absent root — that is a pure
+    // geometric helper; the boundary *policy* is decided here.)
+    if (!ctx.workspaceRoot) {
+      return { level: 'dangerous', reason: '未配置工作区根,写入一律需确认', patterns: [] }
+    }
     const outside = !isInsideWorkspace(path, ctx.workspaceRoot)
     if (outside) {
       // Outside the workspace is dangerous — never offer a remember-pattern
       // (consistent with dangerous run_shell: these must always ask).
-      return { level: 'dangerous', reason: `写入工作区根之外：${path}`, patterns: [] }
+      return { level: 'dangerous', reason: `写入工作区根之外:${path}`, patterns: [] }
     }
-    return { level: 'write', reason: `写入文件：${path}`, patterns: [writeFilePattern(path, ctx.cwd)] }
+    return { level: 'write', reason: `写入文件:${path}`, patterns: [writeFilePattern(path, ctx.cwd)] }
   }
 
   if (name === 'run_shell') {
@@ -215,10 +250,15 @@ export function classify(
         return { level: 'safe', reason: '只读命令', patterns: [] }
       }
     }
+    // High-risk base commands (interpreters, rm, …) are never given a
+    // remember-pattern — a remembered interpreter rule would be a universal
+    // code-exec primitive. decide() also force-asks them; this just avoids
+    // persisting a rule that could never fire (and must never fire) as auto.
+    const patterns = HIGH_RISK_BASE.test(cmd) ? [] : [baseCommandPattern(cmd)]
     return {
       level: 'write',
       reason: '可能修改系统状态的命令',
-      patterns: [baseCommandPattern(cmd)]
+      patterns
     }
   }
 
@@ -301,6 +341,11 @@ export function decide(
   if (name === 'write_file' && subject !== undefined && !subject.trim()) {
     return { action: 'deny', assessment, reason: '路径为空' }
   }
+  // Hoisted shell-risk flags: reused by the allow-rule pass below AND by the
+  // force-ask in step 4.5. Computed from the trimmed command (run_shell only).
+  const subjCmd = name === 'run_shell' ? (subject?.trim() ?? '') : ''
+  const hasShellMeta = /[|;&`$>\r\n]/.test(subjCmd)
+  const highRisk = HIGH_RISK_BASE.test(subjCmd)
   if (ctx.rules && subject) {
     // Normalize file paths the same way the stored rule patterns were built
     // (classify() runs the path through normalizePath: lowercase drive,
@@ -318,9 +363,8 @@ export function decide(
         return { action: 'deny', assessment, reason: `规则拒绝（匹配 ${rule.pattern}）` }
       }
     }
-    // Pass 2: allow. Blocked for dangerous, high-risk-base, or shell-metachar commands.
-    const hasShellMeta = name === 'run_shell' && /[|;&`$>\r\n]/.test(subj)
-    const highRisk = name === 'run_shell' && HIGH_RISK_BASE.test(subj)
+    // Pass 2: allow. Blocked for dangerous, high-risk-base, or shell-metachar
+    // commands (hasShellMeta / highRisk hoisted above the rules block).
     if (level !== 'dangerous' && !hasShellMeta && !highRisk) {
       for (const rule of ctx.rules) {
         if (rule.action === 'allow' && applies(rule) && matches(rule.pattern)) {
@@ -343,6 +387,20 @@ export function decide(
   // 4) Network always asks (sensitive + prompt-injection vector).
   if (level === 'network') {
     return { action: 'ask', assessment, reason: assessment.reason }
+  }
+
+  // 4.5) Shell commands that can execute arbitrary code or chain ALWAYS ask —
+  //      never auto-run (even under the permissive 'auto' policy) and never
+  //      remembered (the allow-rule pass above already skips them). This is the
+  //      prompt-injection defense: a model-emitted interpreter call
+  //      (`node x.js`, `python bot.py`) or a chained command
+  //      (`echo a && rm …`, `curl … | sh`) must surface to the user.
+  if (name === 'run_shell' && (hasShellMeta || highRisk)) {
+    return {
+      action: 'ask',
+      assessment,
+      reason: highRisk ? '高危/解释器命令,需确认' : '含 shell 元字符,需确认'
+    }
   }
 
   // 5) Plain writes: depend on policy.

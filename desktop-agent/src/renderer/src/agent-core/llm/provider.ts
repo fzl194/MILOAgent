@@ -6,11 +6,20 @@ interface OpenAIStreamChunk {
   choices?: Array<{
     delta?: {
       content?: string
+      // Reasoning models emit thinking tokens here (GLM: reasoning_content,
+      // DeepSeek-R1: reasoning). Typed so we don't read them via `as any`.
+      reasoning_content?: string
+      reasoning?: string
       tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
     }
     finish_reason?: string
   }>
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+    prompt_tokens_details?: { cached_tokens?: number }
+  }
 }
 
 export class LLMProvider {
@@ -64,6 +73,9 @@ export class LLMProvider {
     let textContent = ''
     let pendingUsage: UsageStats | null = null
     let pendingFinishReason: string | null = null
+    // Guard against duplicate tool_call_end emission: some proxies re-emit the
+    // final chunk with finish_reason='tool_calls' more than once.
+    let toolEndEmitted = false
 
     for await (const sse of parseSSEStream(response.body)) {
       let chunk: OpenAIStreamChunk
@@ -80,9 +92,10 @@ export class LLMProvider {
           inputTokens: chunk.usage.prompt_tokens ?? 0,
           outputTokens: chunk.usage.completion_tokens ?? 0,
           totalTokens: chunk.usage.total_tokens,
-          cachedTokens: typeof (chunk.usage as any)?.prompt_tokens_details?.cached_tokens === 'number'
-            ? (chunk.usage as any).prompt_tokens_details.cached_tokens
-            : undefined
+          cachedTokens:
+            typeof chunk.usage.prompt_tokens_details?.cached_tokens === 'number'
+              ? chunk.usage.prompt_tokens_details.cached_tokens
+              : undefined
         }
       }
 
@@ -97,7 +110,8 @@ export class LLMProvider {
       }
 
       // Reasoning models (GLM, DeepSeek-R1, etc.) send thinking tokens separately.
-      const reasoning = (delta as any)?.reasoning_content || (delta as any)?.reasoning
+      // ?? (not ||) so an empty-string reasoning_content doesn't fall through.
+      const reasoning = delta?.reasoning_content ?? delta?.reasoning
       if (reasoning) {
         yield { type: 'reasoning_delta', data: reasoning }
       }
@@ -128,7 +142,8 @@ export class LLMProvider {
       // Flush accumulated tool calls once the model signals tool_calls. Do NOT
       // return here — the usage chunk may still be in flight, so keep reading
       // until the stream terminates at [DONE] (handled by parseSSEStream).
-      if (finishReason === 'tool_calls') {
+      if (finishReason === 'tool_calls' && !toolEndEmitted) {
+        toolEndEmitted = true
         for (const [, tc] of toolCallAccumulators) {
           yield { type: 'tool_call_end', data: tc }
         }

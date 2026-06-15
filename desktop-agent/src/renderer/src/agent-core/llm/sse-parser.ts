@@ -16,7 +16,11 @@ export async function* parseSSEStream(
       if (done) break
 
       buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
+      // Normalize CRLF → LF per line: some OpenAI-compatible proxies/endpoints
+      // emit `data: {...}\r\n\r\n`. Without this, the event-terminating blank
+      // line becomes '\r' (not '') and events never flush — the stream looks
+      // stalled or drops frames.
+      const lines = buffer.split('\n').map((l) => l.replace(/\r$/, ''))
       buffer = lines.pop() ?? ''
 
       let currentEvent: string | undefined
@@ -36,8 +40,14 @@ export async function* parseSSEStream(
       }
     }
 
+    // Final flush: decode any trailing multi-byte sequence the streaming
+    // decoder was holding, then emit a dangling data line if the server closed
+    // the connection without a terminating blank line (e.g. a final usage
+    // chunk) — otherwise that last event (and its usage) is silently lost.
+    buffer += decoder.decode()
+    buffer = buffer.replace(/\r$/, '')
     if (buffer.trim() && buffer.startsWith('data: ')) {
-      const data = buffer.slice(6)
+      const data = buffer.slice(6).replace(/\r$/, '')
       if (data.trim() !== '[DONE]') yield { data }
     }
   } finally {

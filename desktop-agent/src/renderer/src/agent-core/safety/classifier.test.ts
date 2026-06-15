@@ -249,3 +249,68 @@ describe('classify · remember-patterns (Claude-Code-style prefixes)', () => {
     expect(classify('write_file', { path: '/etc/x', content: '' }, WS).patterns).toEqual([])
   })
 })
+
+describe('classify · write_file — B3 no-root fail-closed', () => {
+  it('classifies write_file as dangerous when no workspace root is configured', () => {
+    const noRoot = { sandbox: 'workspace-write' as const, workspaceRoot: undefined }
+    expect(classify('write_file', { path: '/anywhere/a.txt', content: 'x' }, noRoot).level).toBe('dangerous')
+    expect(classify('write_file', { path: '/anywhere/a.txt', content: 'x' }, noRoot).patterns).toEqual([])
+  })
+})
+
+describe('classify · run_shell — M1 interpreter escape + destructive vectors', () => {
+  it('flags interpreter inline-code execution as dangerous', () => {
+    expect(levelOf('node -e "x=1"')).toBe('dangerous')
+    expect(levelOf('python -c "import os"')).toBe('dangerous')
+    expect(levelOf('python3 -c "x=1"')).toBe('dangerous')
+    expect(levelOf('ruby -e "puts 1"')).toBe('dangerous')
+    expect(levelOf('perl -e "print 1"')).toBe('dangerous')
+    expect(levelOf('bash -c "rm x"')).toBe('dangerous')
+    expect(levelOf('sh -c "whoami"')).toBe('dangerous')
+    expect(levelOf('powershell -Command "Get-Process"')).toBe('dangerous')
+    expect(levelOf('pwsh -c "1+1"')).toBe('dangerous')
+    expect(levelOf('cmd /c "dir"')).toBe('dangerous')
+  })
+  it('flags destructive copy/archive that bypass rm-style detection', () => {
+    expect(levelOf('cp big.bin /dev/null')).toBe('dangerous')
+    expect(levelOf('tar --remove-files -cf a.tar .')).toBe('dangerous')
+    expect(levelOf('zip -m out.zip secret.txt')).toBe('dangerous')
+    expect(levelOf('tee /dev/sda')).toBe('dangerous')
+  })
+  it('flags disk/ownership/permission utilities', () => {
+    expect(levelOf('diskpart')).toBe('dangerous')
+    expect(levelOf('cipher /w:c:')).toBe('dangerous')
+    expect(levelOf('takeown /f x')).toBe('dangerous')
+    expect(levelOf('icacls x /grant admin:f')).toBe('dangerous')
+    expect(levelOf('Clear-Content x.txt')).toBe('dangerous')
+    expect(levelOf('Start-Process malware.exe')).toBe('dangerous')
+  })
+  it('does NOT over-block benign variants (write/safe)', () => {
+    expect(levelOf('cp a b')).toBe('write')
+    expect(levelOf('mv a b')).toBe('write')
+    expect(levelOf('tar -cf a.tar .')).toBe('write')
+    expect(levelOf('zip out.zip a')).toBe('write')
+    expect(levelOf('cat file.txt')).toBe('safe')
+  })
+})
+
+describe('classify + decide — M2 interpreter never remembered / never auto', () => {
+  const ww = { sandbox: 'workspace-write' as const, workspaceRoot: '/repo' }
+  it('a high-risk interpreter base command offers no remember-pattern', () => {
+    expect(classify('run_shell', { command: 'node script.js' }, ww).patterns).toEqual([])
+    expect(classify('run_shell', { command: 'python bot.py' }, ww).patterns).toEqual([])
+  })
+  it('force-asks an interpreter command even under the auto policy', () => {
+    const w = classify('run_shell', { command: 'node script.js' }, ww)
+    expect(decide(w, 'run_shell', ww, 'auto', 'node script.js').action).toBe('ask')
+  })
+  it('force-asks a shell-metachar chain even under the auto policy', () => {
+    const w = classify('run_shell', { command: 'echo a && ls' }, ww)
+    expect(decide(w, 'run_shell', ww, 'auto', 'echo a && ls').action).toBe('ask')
+  })
+  it('a remembered allow rule cannot auto-run an interpreter', () => {
+    const ctx = { ...ww, rules: [{ pattern: '^node', action: 'allow' as const, tool: 'run_shell' }] }
+    const w = classify('run_shell', { command: 'node evil.js' }, ctx)
+    expect(decide(w, 'run_shell', ctx, 'auto', 'node evil.js').action).toBe('ask')
+  })
+})
