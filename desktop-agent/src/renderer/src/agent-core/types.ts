@@ -209,6 +209,9 @@ export interface AgentConfig {
   approvalPolicy: ApprovalPolicy
   toolHarness?: ToolHarnessConfig
   identity?: IdentityConfig
+  /** P1: persisted schema version for one-time migrations (e.g. flipping the
+   *  identity default). Absent on pre-P1 disks → treated as legacy. */
+  configVersion?: number
 }
 
 // ===== OpenAI API Types =====

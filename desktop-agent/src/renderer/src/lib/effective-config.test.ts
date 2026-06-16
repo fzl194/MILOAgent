@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { getEffectiveConfig, buildSystemPromptParts, buildSystemPrompt } from './effective-config'
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { getEffectiveConfig, buildSystemPromptParts, buildSystemPrompt, formatToday } from './effective-config'
 import { useConfigStore } from '../stores/config-store'
 import { useProjectStore } from '../stores/project-store'
 import { DEFAULT_IDENTITY_PROMPT } from './identity-prompt'
@@ -112,10 +112,8 @@ describe('getEffectiveConfig', () => {
   })
 })
 
-// ---- P0 context-org: default identity + structural prefix/suffix seam ----
-describe('system prompt assembly (P0 context-org)', () => {
-  // Re-derive the exact cwd-note the assembly emits, so the golden lock below
-  // fails on ANY byte drift in the OFF path (the behaviour-preservation guard).
+// ---- P1 context-org: identity (default ON) + memory + currentDate injection ----
+describe('system prompt assembly (P1 context-org)', () => {
   const cwdNote = (dir: string) =>
     `# 工作目录\n你的当前工作目录是 \`${dir}\`。相对路径基于此解析，shell 命令默认在此目录下执行；请优先在此目录内工作。`
 
@@ -126,67 +124,100 @@ describe('system prompt assembly (P0 context-org)', () => {
     useProjectStore.setState({ projects: [], dirMissing: {}, activeProjectId: null })
   })
 
-  it('OFF path is byte-identical to the legacy three-segment assembly (golden lock)', () => {
-    useConfigStore.setState({
-      config: { systemPrompt: 'GLOBAL', sandbox: 'workspace-write', approvalPolicy: 'on-request' }
+  // --- buildSystemPromptParts: pure, pinned inputs (the byte-exact golden lock) ---
+  it('legacy assembly (no memory/date/identity) is byte-exact', () => {
+    // Pinned inputs → no Date → the true regression lock for the suffix body.
+    expect(buildSystemPromptParts({ base: 'GLOBAL', projectPrompt: 'PROJECT', dir: '/repo' })).toEqual({
+      prefix: '',
+      suffix: `GLOBAL\n\nPROJECT\n\n${cwdNote('/repo')}`
     })
-    seedProject({ id: 'p1', dirPath: '/repo', config: { systemPrompt: 'PROJECT' } })
-    const expected = `GLOBAL\n\nPROJECT\n\n${cwdNote('/repo')}`
-    expect(getEffectiveConfig('p1').systemPrompt).toBe(expected)
   })
 
-  it('OFF path with nothing to say yields an empty string', () => {
-    // Unknown projectId → cwd undefined, no project prompt, empty global base.
-    expect(getEffectiveConfig('does-not-exist').systemPrompt).toBe('')
+  it('currentDate block sits at the suffix head, before base', () => {
+    expect(buildSystemPromptParts({ base: 'B', currentDate: '2026-06-16' })).toEqual({
+      prefix: '',
+      suffix: '# 当前日期\n今天是 2026-06-16。\n\nB'
+    })
   })
 
-  it('explicit identity:{enabled:false} is byte-identical to no identity key', () => {
-    seedProject({ id: 'p1', dirPath: '/repo', config: { systemPrompt: 'PROJECT' } })
-    useConfigStore.setState({
-      config: { systemPrompt: 'GLOBAL', sandbox: 'workspace-write', approvalPolicy: 'on-request' }
+  it('memory block precedes currentDate', () => {
+    expect(
+      buildSystemPromptParts({ base: 'B', memory: '# 来源：CLAUDE.md\nX', currentDate: '2026-06-16' })
+    ).toEqual({
+      prefix: '',
+      suffix: '# 项目记忆\n# 来源：CLAUDE.md\nX\n\n# 当前日期\n今天是 2026-06-16。\n\nB'
     })
-    const withoutKey = getEffectiveConfig('p1').systemPrompt
-    useConfigStore.setState({
-      config: {
-        systemPrompt: 'GLOBAL',
-        sandbox: 'workspace-write',
-        approvalPolicy: 'on-request',
-        identity: { enabled: false }
-      }
-    })
-    expect(getEffectiveConfig('p1').systemPrompt).toBe(withoutKey)
   })
 
-  it('identity ON prepends the default identity exactly once, before base/project/cwd', () => {
-    useConfigStore.setState({
-      config: {
-        systemPrompt: 'GLOBAL',
-        sandbox: 'workspace-write',
-        approvalPolicy: 'on-request',
-        identity: { enabled: true }
-      }
+  it('full order: identity prefix → memory → currentDate → base → project → cwd', () => {
+    const s = buildSystemPrompt({
+      identity: 'ID',
+      memory: 'MEM',
+      currentDate: '2026-06-16',
+      base: 'BASE',
+      projectPrompt: 'PROJ',
+      dir: '/d'
     })
-    seedProject({ id: 'p1', dirPath: '/repo', config: { systemPrompt: 'PROJECT' } })
-    const s = getEffectiveConfig('p1').systemPrompt
-    // Full default identity leads...
-    expect(s.startsWith(DEFAULT_IDENTITY_PROMPT)).toBe(true)
-    // ...before the legacy segments, in order.
-    expect(s.indexOf('GLOBAL')).toBeLessThan(s.indexOf('PROJECT'))
-    expect(s.indexOf('PROJECT')).toBeLessThan(s.indexOf('/repo'))
-    // ...and appears exactly once (no duplication).
-    const first = s.indexOf(DEFAULT_IDENTITY_PROMPT)
-    expect(s.indexOf(DEFAULT_IDENTITY_PROMPT, first + 1)).toBe(-1)
+    expect(s.indexOf('ID')).toBeLessThan(s.indexOf('项目记忆'))
+    expect(s.indexOf('项目记忆')).toBeLessThan(s.indexOf('2026-06-16'))
+    expect(s.indexOf('2026-06-16')).toBeLessThan(s.indexOf('BASE'))
+    expect(s.indexOf('BASE')).toBeLessThan(s.indexOf('PROJ'))
+    expect(s.indexOf('PROJ')).toBeLessThan(s.indexOf('/d'))
   })
 
-  it('buildSystemPromptParts exposes the prefix/suffix seam; OFF → empty prefix', () => {
-    expect(buildSystemPromptParts({ base: 'B' })).toEqual({ prefix: '', suffix: 'B' })
-    expect(buildSystemPromptParts({ base: 'B', identity: 'ID' })).toEqual({ prefix: 'ID', suffix: 'B' })
-    // buildSystemPrompt stays a SINGLE string: the title-gen sub-request reuses
-    // this exact value to keep the prefix cache aligned (commit 2428b16), so the
-    // prefix/suffix split is a structural seam — never two wire messages.
-    expect(buildSystemPrompt({ base: 'B', identity: 'ID' })).toBe('ID\n\nB')
-    expect(buildSystemPrompt({ base: 'B' })).toBe('B')
-    expect(buildSystemPrompt({ identity: 'ID' })).toBe('ID')
+  it('empty inputs → empty prefix/suffix; join stays a single string', () => {
+    // buildSystemPrompt stays ONE string: the title-gen sub-request reuses this
+    // exact value (+ ALL_TOOLS) to keep the prefix cache aligned (commit 2428b16),
+    // so the prefix/suffix split is a structural seam — never two wire messages.
+    expect(buildSystemPromptParts({})).toEqual({ prefix: '', suffix: '' })
     expect(buildSystemPrompt({})).toBe('')
+    expect(buildSystemPrompt({ identity: 'ID', base: 'B' })).toBe('ID\n\nB')
+    expect(buildSystemPrompt({ identity: 'ID' })).toBe('ID')
+  })
+
+  it('formatToday formats a Date as local YYYY-MM-DD', () => {
+    expect(formatToday(new Date(2026, 5, 16))).toBe('2026-06-16') // month is 0-based
+    expect(formatToday(new Date(2026, 0, 9))).toBe('2026-01-09')
+  })
+
+  // --- getEffectiveConfig: store + real Date (fake-timer pinned) ---
+  describe('getEffectiveConfig integration', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(2026, 5, 16, 12, 0, 0))
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('currentDate is always injected, even with identity off', () => {
+      useConfigStore.setState({
+        config: { systemPrompt: 'GLOBAL', sandbox: 'workspace-write', approvalPolicy: 'on-request' }
+      })
+      seedProject({ id: 'p1', dirPath: '/repo' })
+      expect(getEffectiveConfig('p1').systemPrompt).toContain('# 当前日期\n今天是 2026-06-16。')
+    })
+
+    it('identity ON + memory + currentDate + base/project/cwd in order', () => {
+      useConfigStore.setState({
+        config: {
+          systemPrompt: 'GLOBAL',
+          sandbox: 'workspace-write',
+          approvalPolicy: 'on-request',
+          identity: { enabled: true }
+        }
+      })
+      seedProject({ id: 'p1', dirPath: '/repo', config: { systemPrompt: 'PROJECT' } })
+      const s = getEffectiveConfig('p1', { memory: 'CLAUDE_MEM' }).systemPrompt
+      expect(s.startsWith(DEFAULT_IDENTITY_PROMPT)).toBe(true)
+      // identity(prefix) → memory → currentDate → base → project → cwd
+      expect(s.indexOf('# 项目记忆')).toBeLessThan(s.indexOf('2026-06-16'))
+      expect(s.indexOf('2026-06-16')).toBeLessThan(s.indexOf('GLOBAL'))
+      expect(s.indexOf('GLOBAL')).toBeLessThan(s.indexOf('PROJECT'))
+      expect(s.indexOf('PROJECT')).toBeLessThan(s.indexOf('/repo'))
+      // identity appears exactly once.
+      const first = s.indexOf(DEFAULT_IDENTITY_PROMPT)
+      expect(s.indexOf(DEFAULT_IDENTITY_PROMPT, first + 1)).toBe(-1)
+    })
   })
 })

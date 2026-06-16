@@ -232,3 +232,33 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   getDefault: () => get().projects.find((p) => p.isDefault),
   getActive: () => get().projects.find((p) => p.id === get().activeProjectId)
 }))
+
+// P1 context-org: read project-root memory files and concatenate them (each
+// prefixed with a `# 来源：` header) into one block for the system prompt. Pure
+// async reader — NOT cached in the store, so edits take effect next turn without
+// a restart. Every failure (missing file, >2MB truncation, IPC error) is
+// swallowed: memory is best-effort and must NEVER abort a turn. See
+// docs/2026-06-15-desktop-agent-上下文组织管理演进.md.
+const MEMORY_CANDIDATES = ['CLAUDE.md', 'AGENTS.md', '.claude/CLAUDE.md']
+
+export async function loadProjectClaudeMd(dirPath: string | null | undefined): Promise<string> {
+  if (!dirPath) return ''
+  const root = dirPath.replace(/[\\/]+$/, '')
+  const parts: string[] = []
+  for (const rel of MEMORY_CANDIDATES) {
+    const abs = `${root}/${rel}`
+    try {
+      const res = await window.electronAPI.readFile(abs)
+      if (res?.truncated) {
+        parts.push(`# 来源：${rel}\n该文件过大（${res.bytes ?? '?'} 字节，上限 2MB），已跳过；请用 read_file 分段读取。`)
+        continue
+      }
+      if (!res?.success) continue // missing or unreadable → skip silently
+      const text = (res.data ?? '').trim()
+      if (text) parts.push(`# 来源：${rel}\n${text}`)
+    } catch {
+      // Swallow — memory is best-effort; never abort a turn over a memory read.
+    }
+  }
+  return parts.join('\n\n---\n\n')
+}

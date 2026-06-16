@@ -15,7 +15,7 @@ import { ElectronToolExecutor } from '../adapters/electron-tool-executor'
 import { useSessionStore } from './session-store'
 import { useModelStore } from './model-store'
 import { useStatsStore } from './stats-store'
-import { useProjectStore } from './project-store'
+import { useProjectStore, loadProjectClaudeMd } from './project-store'
 import { usePermissionStore } from './permission-store'
 import { useConfigStore } from './config-store'
 import { ALL_TOOLS } from '../agent-core/tools/definitions'
@@ -298,9 +298,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return
     }
 
+    // P1: load project-root memory (CLAUDE.md / AGENTS.md) for the system prompt.
+    // Best-effort — loadProjectClaudeMd swallows all IPC errors → ''. Read fresh
+    // every turn so edits take effect without a restart.
+    const memProj = useProjectStore.getState().projects.find((p) => p.id === projectId)
+    const memory = memProj?.dirPath ? await loadProjectClaudeMd(memProj.dirPath) : ''
+
     // Effective config (global ← project ← cwd), centralized in
     // lib/effective-config so turnConfig and buildSafety share one merge.
-    const effective = getEffectiveConfig(projectId, { workspaceOverride: session?.workspaceRoot })
+    const effective = getEffectiveConfig(projectId, { workspaceOverride: session?.workspaceRoot, memory })
     const turnConfig: AgentConfig = {
       systemPrompt: effective.systemPrompt,
       sandbox: effective.sandbox,

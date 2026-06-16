@@ -25,6 +25,9 @@ export interface EffectiveConfig {
 export interface EffectiveConfigOptions {
   /** Override the workspace root (e.g. a session-level root). Falls back to the project dir. */
   workspaceOverride?: string
+  /** P1: project-root memory (CLAUDE.md / AGENTS.md), pre-loaded by the caller
+   *  (getEffectiveConfig stays sync). undefined/'' → no memory block. */
+  memory?: string
 }
 
 // Context-org (P0): the system prompt is assembled as a STABLE prefix (today:
@@ -50,22 +53,41 @@ export interface BuildSystemPromptOptions {
   dir?: string
   /** Resolved identity text (already flag-gated by the caller). undefined/'' = off. */
   identity?: string
+  /** P1: project-root memory (CLAUDE.md / AGENTS.md), as a pre-assembled block. */
+  memory?: string
+  /** P1: today's date (YYYY-MM-DD). undefined → no date block. */
+  currentDate?: string
+}
+
+/** Format a Date as local YYYY-MM-DD. Pure + injectable so tests can pin the date. */
+export function formatToday(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 /** Produce the { prefix, suffix } split without joining. P1/P2 consume this when
- *  they need to treat the stable prefix as its own cache / memory slot. */
+ *  they need to treat the stable prefix as its own cache / memory slot.
+ *
+ *  Suffix block order (left → right): memory → currentDate → base → project → cwd.
+ *  Identity is the ONLY pure-static prefix; everything else is the volatile suffix.
+ *  (Intra-suffix ordering is a P2 cache concern, not P1 correctness.) */
 export function buildSystemPromptParts(opts: BuildSystemPromptOptions): SystemPromptParts {
-  // Suffix — the legacy three-segment assembly, moved here verbatim so the OFF
-  // path (no identity) is byte-identical to the pre-P0 behaviour.
-  let suffix = (opts.base ?? '').trim()
-  if (opts.projectPrompt && opts.projectPrompt.trim()) {
-    suffix = suffix ? `${suffix}\n\n${opts.projectPrompt.trim()}` : opts.projectPrompt.trim()
+  const blocks: string[] = []
+  if (opts.memory && opts.memory.trim()) {
+    blocks.push(`# 项目记忆\n${opts.memory.trim()}`)
   }
+  if (opts.currentDate) {
+    blocks.push(`# 当前日期\n今天是 ${opts.currentDate}。`)
+  }
+  const base = (opts.base ?? '').trim()
+  if (base) blocks.push(base)
+  if (opts.projectPrompt && opts.projectPrompt.trim()) blocks.push(opts.projectPrompt.trim())
   if (opts.dir) {
-    const note = `# 工作目录\n你的当前工作目录是 \`${opts.dir}\`。相对路径基于此解析，shell 命令默认在此目录下执行；请优先在此目录内工作。`
-    suffix = suffix ? `${suffix}\n\n${note}` : note
+    blocks.push(`# 工作目录\n你的当前工作目录是 \`${opts.dir}\`。相对路径基于此解析，shell 命令默认在此目录下执行；请优先在此目录内工作。`)
   }
-  return { prefix: opts.identity ?? '', suffix }
+  return { prefix: opts.identity ?? '', suffix: blocks.join('\n\n') }
 }
 
 /** Compose the single system-prompt string sent on the wire. Empty prefix →
@@ -93,9 +115,10 @@ export function getEffectiveConfig(projectId: string, opts?: EffectiveConfigOpti
       base: cfg.systemPrompt,
       projectPrompt: pcfg?.systemPrompt,
       dir: projDir,
+      memory: opts?.memory,
+      currentDate: formatToday(new Date()),
       // Single merge point resolves the identity flag; OFF → identity undefined,
-      // so the DEFAULT_IDENTITY_PROMPT text never reaches the assembled prompt
-      // (byte-identical to legacy).
+      // so the DEFAULT_IDENTITY_PROMPT text never reaches the assembled prompt.
       identity: cfg.identity?.enabled === true ? DEFAULT_IDENTITY_PROMPT : undefined
     }),
     workspaceRoot: opts?.workspaceOverride ?? projDir,

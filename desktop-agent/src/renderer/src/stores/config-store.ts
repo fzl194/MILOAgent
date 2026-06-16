@@ -6,6 +6,11 @@ import type { AgentConfig, SandboxMode, ApprovalPolicy } from '../agent-core/typ
 // root). Both the Settings panel and the chat top-bar badge read from here, so a
 // save is immediately reflected everywhere — chat-store also reads fresh values
 // from here each turn instead of re-fetching over IPC.
+
+// Bumped on any persisted-schema change. Legacy (pre-P1) disks carry no version
+// → mergeConfig treats them as such for one-time migrations (see AgentConfig.configVersion).
+const CURRENT_CONFIG_VERSION = 2
+
 const DEFAULT_CONFIG: AgentConfig = {
   systemPrompt: '',
   // Personal default leans safe: writes and dangerous actions both ask first.
@@ -13,16 +18,24 @@ const DEFAULT_CONFIG: AgentConfig = {
   approvalPolicy: 'on-request',
   // P1 harness rollout: off by default so behavior is unchanged until toggled.
   toolHarness: { enabled: false },
-  // P0 context-org: default agent identity off → system prompt stays
-  // byte-identical to legacy until toggled. P1 will flip this.
-  identity: { enabled: false }
+  // P1 context-org: default agent identity ON — the model now gets a role /
+  // tool-use / safety preamble by default. Legacy (pre-configVersion) disks are
+  // migrated to this default once; a user who later disables it stays disabled.
+  identity: { enabled: true },
+  configVersion: CURRENT_CONFIG_VERSION
 }
 
 const SANDBOX_VALUES = new Set(['read-only', 'workspace-write', 'full-access'])
 const POLICY_VALUES = new Set(['auto', 'on-request', 'untrusted'])
 
-function mergeConfig(c: Record<string, any> | null | undefined): AgentConfig {
+export function mergeConfig(c: Record<string, any> | null | undefined): AgentConfig {
   if (!c) return { ...DEFAULT_CONFIG }
+  // Legacy (pre-configVersion) disks were self-healed by P0 with identity OFF.
+  // P1 flips the default ON, so a versionless disk is treated as "identity never
+  // explicitly set" → apply the new default. A versioned disk honors the stored
+  // value (so disabling identity later stays disabled across reloads).
+  const legacyDisk = typeof c.configVersion !== 'number'
+  const identityDefault = DEFAULT_CONFIG.identity?.enabled ?? false
   return {
     systemPrompt: typeof c.systemPrompt === 'string' ? c.systemPrompt : DEFAULT_CONFIG.systemPrompt,
     // Validate enums — a corrupted config.json must not let an unknown sandbox
@@ -42,11 +55,13 @@ function mergeConfig(c: Record<string, any> | null | undefined): AgentConfig {
           : (DEFAULT_CONFIG.toolHarness?.enabled ?? false)
     },
     identity: {
-      enabled:
-        typeof c.identity?.enabled === 'boolean'
+      enabled: legacyDisk
+        ? identityDefault
+        : typeof c.identity?.enabled === 'boolean'
           ? c.identity.enabled
-          : (DEFAULT_CONFIG.identity?.enabled ?? false)
-    }
+          : identityDefault
+    },
+    configVersion: CURRENT_CONFIG_VERSION
   }
 }
 
