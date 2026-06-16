@@ -53,7 +53,13 @@ export function migrateModelConfig(raw: unknown): ModelConfig {
     contextWindow,
     protocol: r.protocol === 'anthropic' ? 'anthropic' : 'openai',
     models,
-    defaultModel: typeof r.defaultModel === 'string' ? r.defaultModel : model || undefined
+    defaultModel: typeof r.defaultModel === 'string' ? r.defaultModel : model || undefined,
+    // Tri-state: true | false | undefined. Strict === to reject any truthy
+    // garbage (e.g. "yes" or 1) and keep `undefined` as the "runtime detect"
+    // signal — runtime detection reads `cached_tokens > 0` from the usage
+    // chunk. NOT written to the wire payload.
+    supportsPromptCache:
+      r.supportsPromptCache === true ? true : r.supportsPromptCache === false ? false : undefined
   }
 }
 
@@ -137,7 +143,10 @@ export const useModelStore = create<ModelState>((set, get) => ({
       baseUrl: p.baseUrl,
       model: entry?.id ?? want,
       protocol: p.protocol ?? 'openai',
-      contextWindow: entry?.contextWindow ?? p.contextWindow
+      contextWindow: entry?.contextWindow ?? p.contextWindow,
+      // Tri-state propagated; absence stays absence (no silent default to
+      // true/false — runtime detection owns that decision).
+      supportsPromptCache: p.supportsPromptCache
     }
   },
   persist: async () => { await window.electronAPI.saveModels(get().models) },

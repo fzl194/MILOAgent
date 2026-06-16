@@ -72,6 +72,37 @@ describe('migrateModelConfig', () => {
     expect(m.models).toEqual([])
     expect(typeof m.id).toBe('string')
   })
+
+  // P2 context-org: tri-state seam (true | false | undefined). Strict === so
+  // any truthy/falsy garbage (e.g. "yes", 1, 0) is rejected — undefined must
+  // survive as the "runtime detect" signal. See ModelConfig.supportsPromptCache.
+  it('preserves supportsPromptCache: true (explicit opt-in)', () => {
+    const m = migrateModelConfig({ id: 'p7', name: 'X', apiKey: 'k', baseUrl: 'b', model: 'm1', supportsPromptCache: true })
+    expect(m.supportsPromptCache).toBe(true)
+  })
+
+  it('preserves supportsPromptCache: false (explicit opt-out)', () => {
+    const m = migrateModelConfig({ id: 'p8', name: 'X', apiKey: 'k', baseUrl: 'b', model: 'm1', supportsPromptCache: false })
+    expect(m.supportsPromptCache).toBe(false)
+  })
+
+  it('leaves supportsPromptCache undefined when absent (runtime-detect default)', () => {
+    const m = migrateModelConfig({ id: 'p9', name: 'X', apiKey: 'k', baseUrl: 'b', model: 'm1' })
+    expect(m.supportsPromptCache).toBeUndefined()
+  })
+
+  it('rejects truthy garbage (only literal true is accepted)', () => {
+    const m = migrateModelConfig({ id: 'p10', name: 'X', apiKey: 'k', baseUrl: 'b', model: 'm1', supportsPromptCache: 'yes' as any })
+    expect(m.supportsPromptCache).toBeUndefined()
+  })
+
+  it('survives an idempotent round-trip (migrate → migrate preserves the tri-state)', () => {
+    const cases = [true, false, undefined] as const
+    for (const v of cases) {
+      const raw = { id: 'p11', name: 'X', apiKey: 'k', baseUrl: 'b', model: 'm1', supportsPromptCache: v }
+      expect(migrateModelConfig(migrateModelConfig(raw)).supportsPromptCache).toBe(v)
+    }
+  })
 })
 
 describe('resolveModel', () => {
@@ -124,6 +155,24 @@ describe('resolveModel', () => {
 
   it('returns undefined for an unknown provider', () => {
     expect(useModelStore.getState().resolveModel('does-not-exist')).toBeUndefined()
+  })
+
+  // P2 context-org: propagate the tri-state seam from ModelConfig to ResolvedModel.
+  it('propagates supportsPromptCache: true from provider to ResolvedModel', () => {
+    const p: ModelConfig = { ...base, id: 'p-cache-on', supportsPromptCache: true }
+    useModelStore.setState({ models: [p] })
+    expect(useModelStore.getState().resolveModel('p-cache-on')?.supportsPromptCache).toBe(true)
+  })
+
+  it('propagates supportsPromptCache: false from provider to ResolvedModel', () => {
+    const p: ModelConfig = { ...base, id: 'p-cache-off', supportsPromptCache: false }
+    useModelStore.setState({ models: [p] })
+    expect(useModelStore.getState().resolveModel('p-cache-off')?.supportsPromptCache).toBe(false)
+  })
+
+  it('leaves ResolvedModel.supportsPromptCache undefined when provider omits it', () => {
+    useModelStore.setState({ models: [base] })
+    expect(useModelStore.getState().resolveModel('p1')?.supportsPromptCache).toBeUndefined()
   })
 })
 

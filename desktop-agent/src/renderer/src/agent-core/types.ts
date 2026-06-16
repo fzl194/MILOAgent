@@ -248,6 +248,13 @@ export interface ModelConfig {
   /** The provider's default model id (used when a session picks the provider
    *  without choosing a specific model). Defaults to `model` when absent. */
   defaultModel?: string
+  /** P2 context-org seam — does the model support OpenAI-compatible prompt
+   *  caching (returns `prompt_tokens_details.cached_tokens` on the usage chunk)?
+   *  Tri-state: `true` (explicit opt-in, e.g. known cache-capable backend),
+   *  `false` (explicit opt-out, e.g. known to ignore / charge full price),
+   *  `undefined` (runtime-detect: treat a non-zero `cached_tokens` as proof).
+   *  Not written to the wire payload — purely a UI / telemetry hint. */
+  supportsPromptCache?: boolean
 }
 
 /** A model entry within a provider's list. */
@@ -269,6 +276,9 @@ export interface ResolvedModel {
   model: string
   protocol: 'openai' | 'anthropic'
   contextWindow?: number
+  /** P2 context-org seam — propagated from `ModelConfig.supportsPromptCache`.
+   *  Same tri-state semantics (see ModelConfig.supportsPromptCache). */
+  supportsPromptCache?: boolean
 }
 
 // ===== Session =====
