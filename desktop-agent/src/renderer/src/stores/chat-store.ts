@@ -22,6 +22,7 @@ import { useMonitorStore } from './monitor-store'
 import { ALL_TOOLS } from '../agent-core/tools/definitions'
 import { buildToolRegistry } from '../agent-core/tools/harness'
 import { getEffectiveConfig, type EffectiveConfig } from '../lib/effective-config'
+import { fetchGitStatusTail } from '../lib/git-status'
 import { getMonitorBus } from '../monitor/bus'
 import { startDefaultPersistence } from '../monitor/persistence'
 import type {
@@ -413,7 +414,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       toolHarnessEnabled ? buildToolRegistry() : undefined
     )
 
-      for await (const event of loop.run(text, turnId)) {
+    // P2 context-org: tail-inject the current git status into the user message.
+    // Volatile per-turn content — must NOT go into the system prompt prefix
+    // (would invalidate OpenAI-compatible prefix caching every round). The
+    // helper is best-effort and returns '' on any failure, so a non-git cwd,
+    // a missing `git` binary, or a 3s timeout cannot abort the turn.
+    // See docs/2026-06-15-desktop-agent-上下文组织管理演进.md (P2).
+    const gitTail = await fetchGitStatusTail(effective.cwd, projectId)
+    const turnText = gitTail ? `${text}\n\n${gitTail}` : text
+
+      for await (const event of loop.run(turnText, turnId)) {
         switch (event.type) {
           case 'text_delta':
             set((s) => ({ currentText: s.currentText + (event.data as string) }))

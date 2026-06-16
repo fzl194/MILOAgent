@@ -5,6 +5,9 @@ const electronAPI = {
   writeFile: (p: string, c: string, cwd?: string) => ipcRenderer.invoke('fs:writeFile', p, c, cwd),
   runShell: (cmd: string, cwd?: string) => ipcRenderer.invoke('shell:run', cmd, cwd),
   cancelShell: () => ipcRenderer.invoke('shell:cancel'),
+  // P2 context-org: read-only git status for the per-turn tail block. Bypasses
+  // the safety classifier (no mutating side effect; execFile + arg array, no shell).
+  gitStatus: (cwd: string) => ipcRenderer.invoke('git:status', cwd),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
   readConfig: () => ipcRenderer.invoke('config:read'),
   writeConfig: (cfg: object) => ipcRenderer.invoke('config:write', cfg),

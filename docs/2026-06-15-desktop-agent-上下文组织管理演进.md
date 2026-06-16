@@ -5,8 +5,9 @@
 
 > **演进 vs 现状核对(2026-06-16 更新):P0 接缝落地 / P1 已落地(身份默认开 + 记忆/日期注入)/ P2·P3 部分。**
 > - **P0(接缝完成、已激活)**:默认 agent 身份基提示(角色/工具规范/安全口径)+「前缀(prefix)+ 后缀(suffix)」两段式装配抽象已落地;身份开关经 P1 翻为默认开。
-> - **P1(已落地)**:身份开关**默认翻开**(P0 遗留盘经 `configVersion` 迁移一次性翻 true,版本盘尊重显式值);`currentDate` 总开注入 suffix;项目根 CLAUDE.md / AGENTS.md / .claude/CLAUDE.md **自动发现**(纯异步读取器,吞所有异常、>2MB 给提示、不改 store 每轮读)作「项目记忆」块注入 suffix。suffix 内顺序:记忆 → 日期 → base → project → cwd;identity 仍是唯一静态 prefix。**git 状态仍未注入**(属每轮变动,留 P2 挂 user 消息尾部)。
-> - **P2(部分)**:静态/动态分段与「身份段字节稳定」的设计意图已落进代码;但 cached_tokens 虽已采集却未做命中率前后对比,ModelConfig 也**尚未加** supportsPromptCache 缝,git 状态尾部注入待做。
+> - **P1(已落地)**:身份开关**默认翻开**(P0 遗留盘经 `configVersion` 迁移一次性翻 true,版本盘尊重显式值);`currentDate` 总开注入 suffix;项目根 CLAUDE.md / AGENTS.md / .claude/CLAUDE.md **自动发现**(纯异步读取器,吞所有异常、>2MB 给提示、不改 store 每轮读)作「项目记忆」块注入 suffix。suffix 内顺序:记忆 → 日期 → base → project → cwd;identity 仍是唯一静态 prefix。
+> - **P1 增补(2026-06-16)**:旧版里「**git 状态仍未注入(属每轮变动,留 P2 挂 user 消息尾部)**」一句有误导——P1 时既无 git 读取 IPC、也无 store 接线、也无处可挂。**真实状态:git 状态尾部注入已在 P2 落地**(专设只读 `git:status` IPC + 60s TTL 缓存 + chat-store 在 `loop.run` 前拼接;走 `child_process.execFile`,无 shell,3s 超时,失败静默)。
+> - **P2(部分)**:静态/动态分段与「身份段字节稳定」的设计意图已落进代码;`cached_tokens` 已通过 post-done usage patch **露出到监控面板**(`TokenDashboard` 显示 `cache N (M%)`),`ModelConfig.supportsPromptCache` 三态缝(`true | false | undefined` = 运行时探测)已落,git 状态尾部注入已落(见 P1 增补)。**剩余**:跨会话的缓存命中率前后对比(`cachedTokens` 已露出但还没聚合到会话级)、`supportsPromptCache` 在 wire 层的实际应用(目前是 UI/telemetry 缝,不写进线缆 payload)。
 > - **P3(部分)**:工具结果折叠已有「已折叠」占位告知;完整 FRC 截断告知段、cache-aware 裁剪**均未实现**(仅留策略接缝)。
 > - **一句话**:组织层已立「分层装配 + 默认身份 + 记忆/日期注入」;剩余主线是缓存命中率优化(P2:supportsPromptCache 缝、cached_tokens 前后对比、git 状态尾部注入)与截断告知(P3)。
 

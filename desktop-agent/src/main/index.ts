@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, dialog } from 'electron'
 import { join, resolve, isAbsolute } from 'path'
 import { readFile, writeFile, mkdir, unlink, readdir, access, realpath, stat, rm } from 'fs/promises'
 import { appendFile } from 'fs'
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execFile, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 
 const DATA_DIR = () => join(app.getPath('home'), '.desktop-agent')
@@ -265,6 +265,9 @@ let currentShell: ChildProcess | null = null
 const SHELL_TIMEOUT_MS = 30000
 const SHELL_MAX_BUFFER = 1024 * 1024
 
+/** P2 context-org: cap the `git status` stdout handed back to the renderer. */
+const GIT_STATUS_MAX_CHARS = 4 * 1024
+
 // Kill a shell AND its child processes. `child.kill()` only signals the wrapper
 // shell; on Windows (and often on Unix) spawned grandchildren (npm/python/…)
 // survive. We kill the whole tree instead.
@@ -338,6 +341,61 @@ ipcMain.handle('shell:run', async (_, cmd: string, cwd?: string) => {
 ipcMain.handle('shell:cancel', async () => {
   if (currentShell) killTree(currentShell)
   return { success: true }
+})
+
+// ===== Git status (read-only, P2 context-org) =====
+//
+// Injected into the tail of the latest user message every turn so the model
+// sees the working tree state without us having to put git in the system
+// prompt prefix (which would invalidate OpenAI-compatible prefix caching
+// every round — see docs/2026-06-15-desktop-agent-上下文组织管理演进.md).
+//
+// Bypasses the safety classifier entirely: this IPC is read-only, has no
+// mutating side effect, and the `git` binary cannot be coerced into a shell
+// because we use `execFile` (no shell) and an arg array (no injection).
+ipcMain.handle('git:status', async (_, cwd: string | undefined) => {
+  if (!cwd) return { success: false, error: 'cwd 未提供' }
+  try {
+    const st = await stat(cwd)
+    if (!st.isDirectory()) return { success: false, error: 'cwd 不是目录:' + cwd }
+  } catch {
+    return { success: false, error: 'cwd 不存在:' + cwd }
+  }
+
+  return new Promise((resolve) => {
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    const finish = (success: boolean, error?: string): void => {
+      if (settled) return
+      settled = true
+      // Strip ANSI color codes (e.g. `git status --branch` may emit them in
+      // some terminal configs) and cap the response size to a few KB so a
+      // pathological repo can't blow up the system prompt.
+      const clean = stdout.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').slice(0, GIT_STATUS_MAX_CHARS)
+      resolve({ success, error, data: { stdout: clean, stderr: stderr.slice(0, GIT_STATUS_MAX_CHARS) } })
+    }
+    // execFile (NOT exec) so the args are passed literally — no shell
+    // interpolation. `git status` returns non-zero in some edge cases (e.g.
+    // not a repo), but the call doesn't fail outright; we treat the
+    // non-zero exit as a soft error and return the (possibly empty) stdout
+    // so the renderer can decide what to do.
+    const child = execFile('git', ['status', '--porcelain=v1', '--branch'], {
+      cwd,
+      timeout: 3000,
+      windowsHide: true
+    })
+    child.stdout?.on('data', (d) => { stdout += d.toString() })
+    child.stderr?.on('data', (d) => { stderr += d.toString() })
+    child.on('error', (err) => finish(false, err.message))
+    child.on('close', (code) => {
+      // Non-zero exit (most often: "not a git repository") → still surface
+      // whatever stdout we have, just mark success=false so the renderer's
+      // cache can record a "no repo" miss instead of an empty success.
+      if (code === 0) finish(true)
+      else finish(false, `git exit ${code}`)
+    })
+  })
 })
 
 // ===== Dialog =====

@@ -12,8 +12,10 @@ export interface ElectronAPI {
     bytes?: number
   }>
   writeFile: (p: string, c: string, cwd?: string) => Promise<{ success: boolean; error?: string }>
-  runShell: (cmd: string, cwd?: string) => Promise<{ success: boolean; data?: { stdout: string; stderr: string }; error?: string }>
+  runShell: (cmd: string, cwd?: string) => Promise<{ success: boolean; data?: { stdout: string; stderr: string; persisted?: { path: string; bytes: number; preview: string; truncated: true } }; error?: string }>
   cancelShell: () => Promise<{ success: boolean }>
+  // P2 context-org: read-only git status for the per-turn tail block.
+  gitStatus: (cwd: string) => Promise<{ success: boolean; data?: { stdout: string; stderr: string }; error?: string }>
   pickFolder: () => Promise<{ success: boolean; data?: string | null }>
   readConfig: () => Promise<{ success: boolean; data: Record<string, any> | null }>
   writeConfig: (cfg: object) => Promise<{ success: boolean; error?: string }>
