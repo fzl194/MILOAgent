@@ -84,9 +84,53 @@ describe('classify · run_shell — plain write (default ask)', () => {
   })
 })
 
-describe('classify · read_file / write_file', () => {
-  it('read_file is always safe', () => {
-    expect(classify('read_file', { path: '/etc/passwd' }, WS).level).toBe('safe')
+describe('classify · run_shell — injection hardening (P1 review HIGH #2)', () => {
+  it('awk system() is dangerous (code-exec escape)', () => {
+    expect(levelOf("awk 'BEGIN { system(\"rm -rf x\") }'")).toBe('dangerous')
+  })
+  it('GNU sed `e` flag is dangerous (pattern-space shell exec)', () => {
+    expect(levelOf("sed 's/foo/bar/e'")).toBe('dangerous')
+  })
+  it('cold code-exec interpreters are force-asked via HIGH_RISK_BASE (no remember)', () => {
+    // These have NO safe read analog, so HIGH_RISK_BASE is the right knob
+    // (decide() force-asks, and we suppress the remember-pattern so a
+    // remembered `nu`/`xonsh`/`osascript` rule can never auto-run anything).
+    for (const cmd of [
+      'nu -c "ls"',
+      'xonsh -c "ls"',
+      'osascript -e "do shell script \\"ls\\""',
+      'expect -c "ls"',
+      'lua -e "os.execute(\\"ls\\")"',
+    ]) {
+      const a = shell(cmd)
+      expect(a.level).not.toBe('safe')
+      expect(a.patterns).toEqual([]) // never rememberable
+    }
+  })
+})
+
+describe('classify · read_file / write_file (workspace-aware gating — P1 fix)', () => {
+  it('read_file INSIDE workspace is safe (auto)', () => {
+    expect(classify('read_file', { path: '/repo/a.txt' }, WS).level).toBe('safe')
+  })
+  it('read_file OUTSIDE workspace is dangerous (no remember — the ~/.ssh hole)', () => {
+    // The P1 review's CRITICAL: a remembered rule that auto-reads ~/.ssh or
+    // ~/.desktop-agent/models.json. Outside-workspace reads must NEVER be
+    // auto-run and NEVER be rememberable.
+    const a = classify('read_file', { path: '/etc/passwd' }, WS)
+    expect(a.level).toBe('dangerous')
+    expect(a.reason).toContain('/etc/passwd')
+    expect(a.patterns).toEqual([])
+  })
+  it('read_file with full-access sandbox is safe (opt-in unbounded)', () => {
+    const FA = { sandbox: 'full-access' as const, workspaceRoot: '/repo' }
+    expect(classify('read_file', { path: '/etc/passwd' }, FA).level).toBe('safe')
+  })
+  it('read_file with no workspaceRoot stays safe (main process IPC is the backstop)', () => {
+    // No root at the classifier → main-process guard refuses out-of-workspace
+    // reads when sandbox !== 'full-access'. Keep safe here to avoid UX regression.
+    const NOROOT = { sandbox: 'workspace-write' as const }
+    expect(classify('read_file', { path: '/etc/passwd' }, NOROOT).level).toBe('safe')
   })
   it('write_file inside workspace is write', () => {
     expect(classify('write_file', { path: '/repo/a.txt', content: 'x' }, WS).level).toBe('write')

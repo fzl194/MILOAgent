@@ -157,7 +157,15 @@ const DANGEROUS: { re: RegExp; label: string }[] = [
   // Disk / ownership / permission utilities (no safe auto-run form).
   { re: /\b(diskpart|cipher|takeown|icacls)\b/i, label: '磁盘/权限危险操作' },
   { re: /\bClear-Content\b/i, label: 'PowerShell 清空文件' },
-  { re: /\bStart-Process\b/i, label: 'PowerShell 启动进程' }
+  { re: /\bStart-Process\b/i, label: 'PowerShell 启动进程' },
+  // Code-exec via awk/sed that have legit READ uses too — keep them out of
+  // HIGH_RISK_BASE (would break `sed -n "1,200p"` / `awk '{print}'`) and use
+  // precise DANGEROUS instead. Complex sed scripts may still slip; AST-level
+  // detection is the future hardening.
+  { re: /\bawk\b[^|;&]*\bsystem\s*\(/, label: 'awk system() 执行' },
+  // GNU sed `e` flag executes the pattern space as a shell command: `sed 's/x/y/e'`.
+  // Best-effort regex matching the `s/.../e'|"` form.
+  { re: /\bsed\b[^|;&]*\bs\/[^\n|;&'"]*\/[^\n|;&'"]*e['"]/, label: 'sed e 命令执行 shell' }
 ]
 
 // High-risk base commands: even if a specific dangerous pattern doesn't fire
@@ -169,7 +177,7 @@ const DANGEROUS: { re: RegExp; label: string }[] = [
 // a remembered interpreter rule would be a universal code-exec primitive
 // (`node x.js` remembered → `node -e "evil"` would otherwise match and run).
 // Defense-in-depth against prompt injection + classifier gaps.
-const HIGH_RISK_BASE = /^(sudo\s+)?(rm|del|rmdir|format|mkfs|dd|shutdown|reboot|halt|poweroff|Remove-Item|Invoke-Expression|iex|node|deno|bun|python[23]?|py|ruby|perl|php|bash|sh|zsh|ksh|fish|powershell|pwsh|cmd|Start-Process)\b/i
+const HIGH_RISK_BASE = /^(sudo\s+)?(rm|del|rmdir|format|mkfs|dd|shutdown|reboot|halt|poweroff|Remove-Item|Invoke-Expression|iex|node|deno|bun|python[23]?|py|ruby|perl|php|bash|sh|zsh|ksh|fish|powershell|pwsh|cmd|Start-Process|nu|xonsh|osascript|expect|tclsh|lua|jshell|ghci|pry|irb|tcc)\b/i
 
 // Commands that reach the network (downloads, installs, remote git).
 const NETWORK: RegExp[] = [
@@ -203,8 +211,26 @@ export function classify(
   args: Record<string, unknown>,
   ctx: ClassifyContext
 ): RiskAssessment {
-  // Reads are intrinsically safe.
   if (name === 'read_file') {
+    // full-access: user opted in to no confinement — read anywhere, keep safe.
+    if (ctx.sandbox === 'full-access') {
+      return { level: 'safe', reason: '读取文件', patterns: [] }
+    }
+    // No workspace root at the classifier → main-process IPC guard is the hard
+    // backstop (refuses reads outside the default workspace). Keep safe here to
+    // avoid regressing pre-P1 UX; main is the boundary.
+    if (!ctx.workspaceRoot) {
+      return { level: 'safe', reason: '读取文件(主进程护栏)', patterns: [] }
+    }
+    const path = String(args.path ?? '')
+    if (!isInsideWorkspace(path, ctx.workspaceRoot)) {
+      // Outside-workspace read: ALWAYS ask, NO remember-pattern. A remembered
+      // rule that auto-reads a path (e.g. ~/.ssh/id_rsa, ~/.desktop-agent/
+      // models.json) is the exact hole the main-process backstop exists to
+      // prevent. User must switch to full-access sandbox for truly unrestricted
+      // reads.
+      return { level: 'dangerous', reason: `读取工作区根之外:${path}`, patterns: [] }
+    }
     return { level: 'safe', reason: '读取文件', patterns: [] }
   }
 

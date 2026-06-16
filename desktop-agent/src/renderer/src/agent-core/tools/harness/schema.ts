@@ -21,11 +21,24 @@ export function zodToJsonSchema(schema: ZodTypeAny): JsonSchema7 {
   // `additionalProperties:false` zod/v4 emits by default. Some OpenAI-compatible
   // backends (GLM/DeepSeek function calling) reject requests carrying extra
   // schema fields, and the legacy hand-written tool definitions never set them —
-  // this restores wire-schema parity. (Top-level fields; nested object props
-  // would need the same treatment when a tool actually uses them.)
-  const out: JsonSchema7 = { ...raw }
-  delete out.$schema
-  delete out.additionalProperties
+  // this restores wire-schema parity. Recursive so NESTED object params (any
+  // depth) are also cleaned — a tool with `{ git_diff: { repo, files[] } }`
+  // would otherwise leak `additionalProperties:false` on the inner object and
+  // be rejected by GLM/DeepSeek.
+  const out = stripSchemaExtras(raw) as JsonSchema7
   cache.set(schema, out)
+  return out
+}
+
+/** Recursively delete `$schema` and `additionalProperties` from a JSON-Schema
+ *  node and all its `properties` children. Arrays are mapped element-wise. */
+function stripSchemaExtras(node: unknown): unknown {
+  if (!node || typeof node !== 'object') return node
+  if (Array.isArray(node)) return node.map(stripSchemaExtras)
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    if (k === '$schema' || k === 'additionalProperties') continue
+    out[k] = stripSchemaExtras(v)
+  }
   return out
 }

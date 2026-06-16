@@ -98,4 +98,28 @@ describe('runTool', () => {
     expect(r.truncated).toBeUndefined()
     expect(r.content.length).toBe(10_000)
   })
+
+  // "Never throws" is runTool's core safety contract (see tool.ts: every
+  // failure path in the lifecycle must resolve with an isError result rather
+  // than reject, so a thrown tool can never abort the agent loop. These tests
+  // pin the contract — if a future refactor drops a try/catch, the loop would
+  // still catch, but the contract itself would be broken.
+  it('never throws when checkPermissions throws a non-Error value', async () => {
+    const t = mkTool({ checkPermissions: (async () => { throw 'string-not-error' }) as Tool['checkPermissions'] })
+    const r = await runTool(t, { x: 1 }, ctx)
+    expect(r.isError).toBe(true)
+    expect(r.content).toContain('string-not-error')
+  })
+  it('never throws when call() throws a non-Error value', async () => {
+    const t = mkTool({ call: (async () => { throw 42 }) as Tool['call'] })
+    const r = await runTool(t, { x: 1 }, ctx)
+    expect(r.isError).toBe(true)
+    expect(r.content).toContain('42')
+  })
+  it('never throws when validateInput rejects', async () => {
+    const t = mkTool({ validateInput: async () => { throw new Error('vboom') } })
+    const r = await runTool(t, { x: 1 }, ctx)
+    expect(r.isError).toBe(true)
+    expect(r.content).toContain('vboom')
+  })
 })

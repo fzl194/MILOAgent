@@ -4,6 +4,8 @@ import { readFile, writeFile, mkdir, unlink, readdir, access, realpath, stat, rm
 import { appendFile } from 'fs'
 import { spawn, execFile, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
+import { enforceWorkspacePath, type Sandbox } from './fs-guard'
+import { decideShellOutputPersist } from './persist'
 
 const DATA_DIR = () => join(app.getPath('home'), '.desktop-agent')
 const WORKSPACE_DIR = () => join(DATA_DIR(), 'workspace')
@@ -237,6 +239,24 @@ async function canonicalize(p: string): Promise<string> {
   try { return await realpath(p) } catch { return p }
 }
 
+// Workspace boundary for the read defense. Mirrors the renderer's effective
+// workspaceRoot fallback so main and renderer converge on the same boundary.
+// Defense-in-depth for read_file (P1 review): a bypassed renderer must NOT be
+// able to read ~/.ssh, ~/.desktop-agent/models.json, or any other path outside
+// the workspace when sandbox !== 'full-access'.
+// Shared sandbox + workspace-root resolver (I/O). Used by both read and write
+// IPC handlers so the two defenses never drift. The pure guard
+// (enforceWorkspacePath) lives in fs-guard and is unit-tested there.
+async function getSandboxAndRoot(): Promise<{ sandbox: Sandbox; root: string }> {
+  const cfg = await readJson<{ sandbox?: Sandbox; workspaceRoot?: string }>(join(DATA_DIR(), 'config.json'), {})
+  const sandbox: Sandbox =
+    cfg.sandbox === 'read-only' || cfg.sandbox === 'workspace-write' || cfg.sandbox === 'full-access'
+      ? cfg.sandbox
+      : 'workspace-write'
+  const root = (cfg.workspaceRoot && cfg.workspaceRoot.trim()) || join(DATA_DIR(), 'workspace')
+  return { sandbox, root }
+}
+
 ipcMain.handle('fs:readFile', async (_, p: string, cwd?: string) => {
   try {
     const resolved = resolveUnder(p, cwd)
@@ -244,6 +264,13 @@ ipcMain.handle('fs:readFile', async (_, p: string, cwd?: string) => {
     // Re-check after canonicalizing: a benign-looking path can symlink to a device.
     const canon = await canonicalize(resolved)
     if (isDevicePath(canon)) return { success: false, error: '拒绝读取设备/特殊文件(canonicalized)' }
+    // Workspace boundary (defense-in-depth). sandbox === 'full-access' opts
+    // out; otherwise canon must be inside the canonicalized workspace root.
+    // The pure guard also resolves `..`/`.` for string-level safety.
+    const { sandbox, root } = await getSandboxAndRoot()
+    const rootCanon = await canonicalize(root)
+    const check = enforceWorkspacePath(canon, sandbox, rootCanon)
+    if (!check.allowed) return { success: false, error: check.reason ?? '拒绝读取工作区之外的文件' }
     const st = await stat(canon)
     // Refuse oversized files without reading them (avoids loading 100s of MB
     // into memory). truncated/bytes let the renderer steer the model to a
@@ -255,15 +282,44 @@ ipcMain.handle('fs:readFile', async (_, p: string, cwd?: string) => {
     return { success: true, data, bytes: st.size }
   } catch (e: any) { return { success: false, error: e.message } }
 })
-ipcMain.handle('fs:writeFile', async (_, p: string, c: string, cwd?: string) => {
-  try { const rp = resolveUnder(p, cwd); await mkdir(join(rp, '..'), { recursive: true }); await writeFile(rp, c, 'utf-8'); return { success: true } }
-  catch (e: any) { return { success: false, error: e.message } }
+// P2 #1: writeFile now has the same defense-in-depth as readFile. The
+// previous handler was a single line with NO checks (a bypassed renderer
+// could overwrite ~/.ssh/authorized_keys, ~/.desktop-agent/models.json, or
+// any system file). Canonicalize + device re-check + workspace guard
+// (enforceWorkspacePath) before mkdir+write. full-access opts out.
+ipcMain.handle('fs:writeFile', async (_, p: string, content: string, cwd?: string) => {
+  try {
+    const resolved = resolveUnder(p, cwd)
+    if (isDevicePath(resolved)) return { success: false, error: '拒绝写入设备/特殊文件:' + resolved }
+    const canon = await canonicalize(resolved)
+    if (isDevicePath(canon)) return { success: false, error: '拒绝写入设备/特殊文件(canonicalized)' }
+    const { sandbox, root } = await getSandboxAndRoot()
+    const rootCanon = await canonicalize(root)
+    const check = enforceWorkspacePath(canon, sandbox, rootCanon)
+    if (!check.allowed) return { success: false, error: check.reason ?? '拒绝写入工作区之外的文件' }
+    // mkdir parent (recursive) then write — atomic enough for a personal
+    // desktop agent. canon for a non-existent file falls back to the raw
+    // resolved path (canonicalize returns input on ENOENT), so `..` is still
+    // the correct parent.
+    await mkdir(join(canon, '..'), { recursive: true })
+    await writeFile(canon, content, 'utf-8')
+    return { success: true }
+  } catch (e: any) { return { success: false, error: e.message } }
 })
 // Tracks the currently-running shell so a user "stop" can kill it. Turns are
 // serial, so a single slot is sufficient.
 let currentShell: ChildProcess | null = null
 const SHELL_TIMEOUT_MS = 30000
 const SHELL_MAX_BUFFER = 1024 * 1024
+
+// P2 #2: large shell output is persisted to disk to prevent context blowup
+// from build logs etc. Threshold = harness shell maxResultSizeChars (30K);
+// beyond it we write the full combined output to tool-results/<uuid>.txt and
+// return the aligned preview (with a "full at <path>" marker) to the model.
+// The model can re-read the full file via read_file.
+const TOOL_RESULTS_DIR = () => join(DATA_DIR(), 'tool-results')
+const SHELL_PERSIST_THRESHOLD = 30 * 1024
+const SHELL_PREVIEW_BYTES = 2 * 1024
 
 /** P2 context-org: cap the `git status` stdout handed back to the renderer. */
 const GIT_STATUS_MAX_CHARS = 4 * 1024
@@ -307,12 +363,42 @@ ipcMain.handle('shell:run', async (_, cmd: string, cwd?: string) => {
     let stderr = ''
     let settled = false
     let timer: NodeJS.Timeout
-    const finish = (success: boolean, error?: string): void => {
+    // finish is async so it can writeFile the persisted result before
+    // resolving. Event handlers ignore the returned promise (`void finish`).
+    const finish = async (success: boolean, error?: string): Promise<void> => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       currentShell = null
-      resolve({ success, error, data: { stdout, stderr } })
+      // P2 #2: if combined output exceeds the threshold, persist the full
+      // content to disk and return the preview (with a "full at <path>"
+      // marker) as stdout. stderr is folded into the combined preview to
+      // avoid duplication. The `persisted` field carries structured metadata
+      // for tracing / future harness use. If the write fails, fall back to
+      // the inline (hard-capped) stdout/stderr.
+      const combined = stdout + stderr
+      let data: { stdout: string; stderr: string; persisted?: { path: string; bytes: number; preview: string; truncated: true } } = { stdout, stderr }
+      if (combined.length > SHELL_PERSIST_THRESHOLD) {
+        const decision = decideShellOutputPersist(combined, {
+          id: randomUUID(),
+          baseDir: TOOL_RESULTS_DIR(),
+          maxChars: SHELL_PERSIST_THRESHOLD,
+          previewBytes: SHELL_PREVIEW_BYTES,
+        })
+        if (decision.kind === 'persisted') {
+          try {
+            await writeFile(decision.path, combined, 'utf-8')
+            data = {
+              stdout: decision.preview,
+              stderr: '',
+              persisted: { path: decision.path, bytes: decision.bytes, preview: decision.preview, truncated: true },
+            }
+          } catch {
+            data = { stdout, stderr }
+          }
+        }
+      }
+      resolve({ success, error, data })
     }
     // detached on Unix makes the child a process-group leader so killTree can
     // kill the whole group; ignored on Windows (we use taskkill /T there).
@@ -328,11 +414,11 @@ ipcMain.handle('shell:run', async (_, cmd: string, cwd?: string) => {
       stderr += d.toString()
       if (stderr.length > SHELL_MAX_BUFFER) stderr = stderr.slice(0, SHELL_MAX_BUFFER)
     })
-    child.on('error', (err) => finish(false, err.message))
+    child.on('error', (err) => { void finish(false, err.message) })
     child.on('close', (code) => {
       // Non-zero exit mirrors the legacy exec() behaviour (surfaced as an error
       // result so the agent can react), with partial stdout/stderr preserved.
-      finish(code === 0, code !== 0 ? `exit code ${code}` : undefined)
+      void finish(code === 0, code !== 0 ? `exit code ${code}` : undefined)
     })
     timer = setTimeout(() => killTree(child), SHELL_TIMEOUT_MS)
   })
