@@ -277,11 +277,18 @@ export class AgentLoop {
               // classify() then flags it outside the workspace → dangerous → the
               // user is asked instead of getting a wrong silent write.
               const hasEnvPrefix =
-                tc.name === 'write_file' &&
+                (tc.name === 'read_file' || tc.name === 'write_file') &&
                 typeof parsedArgs.path === 'string' &&
                 /^[~$%]/.test(parsedArgs.path)
               if (
-                tc.name === 'write_file' &&
+                // Resolve relative paths for ALL file tools (read + write) against
+                // the turn cwd BEFORE classify. The classifier compares the path
+                // string against the absolute workspaceRoot; a relative path like
+                // `docs/x.md` would never startsWith an absolute root and get
+                // misclassified as "outside workspace" → dangerous → ask. Prepending
+                // cwd makes the comparison correct for files actually inside the
+                // working area (the common case).
+                (tc.name === 'read_file' || tc.name === 'write_file') &&
                 cwd &&
                 typeof parsedArgs.path === 'string' &&
                 !/^[A-Za-z]:[\\/]/.test(parsedArgs.path) && // Windows drive-absolute
