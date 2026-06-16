@@ -71,7 +71,7 @@ npm run test:watch   # 监听模式
 | **修改** | 按方案实现 | 直接编辑;小步聚焦 |
 | **测试** | 类型检查 + 单测必须全绿 | `npm run typecheck && npm run test` |
 | **审查** | 第一路:正确性/边界/回归 | `ecc:code-review`(ecc code-reviewer agent) |
-| **codex 审查** | 第二路:独立第二意见 | `codex:codex-rescue` agent |
+| **codex 审查** | 第二路:独立第二意见 | `codex-review`(codex 插件 review 斜杠命令;可能需先开 PR) |
 | **迭代** | 汇总两路发现,修改后**重新验证**,循环到干净 | 同上 |
 
 **规则:**
@@ -79,6 +79,7 @@ npm run test:watch   # 监听模式
 - **🚫 禁止调用 `deep-research` skill。** 需要"调研/查资料"时,改用同级别目录下的知识库(本机具体目录名按本地约定;§8)+ `WebSearch`/网页抓取,自己整合。
 - 改动跨多个文件时,用 `TaskCreate` 跟踪进度。
 - 类型检查或测试不绿,不得宣告"完成";如实报告失败。
+- **codex 审查必须前台、显式等待**——不得后台派发后无人值守。`codex-review` 走 codex 运行时,同样的 wrapper 不轮询约束,后台派发会失去可见性(教训:曾用 `codex:codex-rescue` 后台跑,静默 48 分钟才察觉,期间无任何进度可查)。派发后用 `/codex:status` 主动监控进度;需取消用 `/codex:cancel`。**禁止**用子 agent 的「返回即视为完成」来隐藏进度,codex 任务必须同步等最终结论。
 
 ---
 
