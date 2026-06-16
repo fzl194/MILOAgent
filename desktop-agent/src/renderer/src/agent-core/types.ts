@@ -196,8 +196,10 @@ export interface ToolHarnessConfig {
 }
 
 // P0 context-org: a default agent identity (role / tool norms / safety) prepended
-// to the system prompt when enabled. Default OFF → the system prompt stays
-// byte-identical to legacy until toggled; P1 will flip the default. See
+// to the system prompt when enabled. **Default ON since P1** — the system
+// prompt no longer defaults to empty. Legacy pre-configVersion disks were
+// self-healed with identity OFF; `mergeConfig` migrates them to ON once. A
+// user who later disables it stays disabled across reloads. See
 // docs/2026-06-15-desktop-agent-上下文组织管理演进.md.
 export interface IdentityConfig {
   enabled: boolean

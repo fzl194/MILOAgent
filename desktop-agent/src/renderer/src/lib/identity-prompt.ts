@@ -1,7 +1,9 @@
 // The default agent identity — a STABLE prefix prepended to the system prompt
-// when `AgentConfig.identity.enabled` is on (default OFF; P1 will flip it). It is
-// intentionally byte-stable: no timestamps, session ids, or working-directory
-// text — anything volatile belongs in the dynamic suffix (buildSystemPromptParts
+// when `AgentConfig.identity.enabled` is on. **Default ON since P1** (legacy
+// pre-configVersion disks are migrated to ON once via `mergeConfig`; a user
+// who later disables it stays disabled across reloads). It is intentionally
+// byte-stable: no timestamps, session ids, or working-directory text —
+// anything volatile belongs in the dynamic suffix (buildSystemPromptParts
 // .suffix), so this block can serve as a cacheable static prefix (P2).
 //
 // See docs/2026-06-15-desktop-agent-上下文组织管理演进.md (P0).
