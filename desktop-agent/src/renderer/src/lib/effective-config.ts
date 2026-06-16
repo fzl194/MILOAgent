@@ -2,6 +2,7 @@ import type { SandboxMode, ApprovalPolicy, PermissionRule } from '../agent-core/
 import { useConfigStore } from '../stores/config-store'
 import { useProjectStore } from '../stores/project-store'
 import { DEFAULT_IDENTITY_PROMPT } from './identity-prompt'
+import { FOLD_NOTICE_TEXT } from '../agent-core/agent/fold-notice'
 
 // The fully-resolved effective config for one turn: global base ← project
 // overrides ← cwd. Centralized here so chat-store's turnConfig and buildSafety
@@ -70,9 +71,14 @@ export function formatToday(d: Date): string {
 /** Produce the { prefix, suffix } split without joining. P1/P2 consume this when
  *  they need to treat the stable prefix as its own cache / memory slot.
  *
- *  Suffix block order (left → right): memory → currentDate → base → project → cwd.
- *  Identity is the ONLY pure-static prefix; everything else is the volatile suffix.
- *  (Intra-suffix ordering is a P2 cache concern, not P1 correctness.) */
+ *  Suffix block order (left → right): memory → currentDate → base → project →
+ *  cwd → fold-notice. Identity is the ONLY pure-static prefix; everything else
+ *  is the volatile suffix. (Intra-suffix ordering is a P2 cache concern, not
+ *  P1 correctness.)
+ *
+ *  The fold-notice block is unconditional: the model needs to know that tool
+ *  results CAN be folded even on the very first message of a session, so the
+ *  notice lives in the suffix even when no other block is present. */
 export function buildSystemPromptParts(opts: BuildSystemPromptOptions): SystemPromptParts {
   const blocks: string[] = []
   if (opts.memory && opts.memory.trim()) {
@@ -87,6 +93,8 @@ export function buildSystemPromptParts(opts: BuildSystemPromptOptions): SystemPr
   if (opts.dir) {
     blocks.push(`# 工作目录\n你的当前工作目录是 \`${opts.dir}\`。相对路径基于此解析，shell 命令默认在此目录下执行；请优先在此目录内工作。`)
   }
+  // P3: unconditional FRC notice — see fold-notice.ts.
+  blocks.push(FOLD_NOTICE_TEXT)
   return { prefix: opts.identity ?? '', suffix: blocks.join('\n\n') }
 }
 

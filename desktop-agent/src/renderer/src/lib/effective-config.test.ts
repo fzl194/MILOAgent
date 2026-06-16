@@ -3,6 +3,7 @@ import { getEffectiveConfig, buildSystemPromptParts, buildSystemPrompt, formatTo
 import { useConfigStore } from '../stores/config-store'
 import { useProjectStore } from '../stores/project-store'
 import { DEFAULT_IDENTITY_PROMPT } from './identity-prompt'
+import { FOLD_NOTICE_TEXT as FOLD_NOTICE, OLD_TOOL_RESULT_FOLDED_PLACEHOLDER } from '../agent-core/agent/fold-notice'
 import type { Project } from '../agent-core/types'
 
 // getEffectiveConfig reads live store state, so seed the stores directly.
@@ -127,16 +128,17 @@ describe('system prompt assembly (P1 context-org)', () => {
   // --- buildSystemPromptParts: pure, pinned inputs (the byte-exact golden lock) ---
   it('legacy assembly (no memory/date/identity) is byte-exact', () => {
     // Pinned inputs → no Date → the true regression lock for the suffix body.
+    // The fold-notice block is appended unconditionally since P3.
     expect(buildSystemPromptParts({ base: 'GLOBAL', projectPrompt: 'PROJECT', dir: '/repo' })).toEqual({
       prefix: '',
-      suffix: `GLOBAL\n\nPROJECT\n\n${cwdNote('/repo')}`
+      suffix: `GLOBAL\n\nPROJECT\n\n${cwdNote('/repo')}\n\n${FOLD_NOTICE}`
     })
   })
 
   it('currentDate block sits at the suffix head, before base', () => {
     expect(buildSystemPromptParts({ base: 'B', currentDate: '2026-06-16' })).toEqual({
       prefix: '',
-      suffix: '# 当前日期\n今天是 2026-06-16。\n\nB'
+      suffix: '# 当前日期\n今天是 2026-06-16。\n\nB\n\n' + FOLD_NOTICE
     })
   })
 
@@ -145,11 +147,11 @@ describe('system prompt assembly (P1 context-org)', () => {
       buildSystemPromptParts({ base: 'B', memory: '# 来源：CLAUDE.md\nX', currentDate: '2026-06-16' })
     ).toEqual({
       prefix: '',
-      suffix: '# 项目记忆\n# 来源：CLAUDE.md\nX\n\n# 当前日期\n今天是 2026-06-16。\n\nB'
+      suffix: '# 项目记忆\n# 来源：CLAUDE.md\nX\n\n# 当前日期\n今天是 2026-06-16。\n\nB\n\n' + FOLD_NOTICE
     })
   })
 
-  it('full order: identity prefix → memory → currentDate → base → project → cwd', () => {
+  it('full order: identity prefix → memory → currentDate → base → project → cwd → fold-notice', () => {
     const s = buildSystemPrompt({
       identity: 'ID',
       memory: 'MEM',
@@ -163,16 +165,29 @@ describe('system prompt assembly (P1 context-org)', () => {
     expect(s.indexOf('2026-06-16')).toBeLessThan(s.indexOf('BASE'))
     expect(s.indexOf('BASE')).toBeLessThan(s.indexOf('PROJ'))
     expect(s.indexOf('PROJ')).toBeLessThan(s.indexOf('/d'))
+    expect(s.indexOf('/d')).toBeLessThan(s.indexOf('上下文折叠通知'))
   })
 
-  it('empty inputs → empty prefix/suffix; join stays a single string', () => {
+  // P3 FRC: the fold-notice block is unconditional. Empty input → the notice
+  // is the entire suffix. This is intentional — the model needs to know that
+  // tool results can be folded even on the very first message of a session.
+  it('empty inputs → empty prefix; suffix is just the fold-notice (unconditional)', () => {
     // buildSystemPrompt stays ONE string: the title-gen sub-request reuses this
     // exact value (+ ALL_TOOLS) to keep the prefix cache aligned (commit 2428b16),
     // so the prefix/suffix split is a structural seam — never two wire messages.
-    expect(buildSystemPromptParts({})).toEqual({ prefix: '', suffix: '' })
-    expect(buildSystemPrompt({})).toBe('')
-    expect(buildSystemPrompt({ identity: 'ID', base: 'B' })).toBe('ID\n\nB')
-    expect(buildSystemPrompt({ identity: 'ID' })).toBe('ID')
+    expect(buildSystemPromptParts({})).toEqual({ prefix: '', suffix: FOLD_NOTICE })
+    expect(buildSystemPrompt({})).toBe(FOLD_NOTICE)
+    expect(buildSystemPrompt({ identity: 'ID', base: 'B' })).toBe('ID\n\nB\n\n' + FOLD_NOTICE)
+    expect(buildSystemPrompt({ identity: 'ID' })).toBe('ID\n\n' + FOLD_NOTICE)
+  })
+
+  // P3 FRC: the notice text references the placeholder verbatim — a rename
+  // in fold-notice.ts would silently break the model's ability to recognize
+  // the placeholder. This test guards against that drift.
+  it('fold-notice text references the placeholder string (no drift allowed)', () => {
+    expect(FOLD_NOTICE).toContain(OLD_TOOL_RESULT_FOLDED_PLACEHOLDER)
+    const out = buildSystemPrompt({ base: 'X' })
+    expect(out).toContain(OLD_TOOL_RESULT_FOLDED_PLACEHOLDER)
   })
 
   it('formatToday formats a Date as local YYYY-MM-DD', () => {

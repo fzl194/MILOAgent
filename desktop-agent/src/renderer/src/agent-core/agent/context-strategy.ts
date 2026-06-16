@@ -136,8 +136,12 @@ export function dropOldestBlock(messages: Message[]): Message[] {
  *  Cache-aware: only runs when fillRatio > threshold (NOT every request). Running
  *  every turn mutates mid-array content → invalidates prefix cache even for short
  *  conversations. By deferring to a fill threshold, short conversations keep
- *  their cache intact; long conversations still get trimmed before overflow. */
-const ELIDED_TOOL_RESULT = '[旧工具结果已折叠 · old tool result elided by context trimming]'
+ *  their cache intact; long conversations still get trimmed before overflow.
+ *
+ *  The placeholder string is shared with the FRC notice in the system prompt
+ *  (see ./fold-notice.ts) so a rename here MUST be matched in the notice text
+ *  — the system prompt literally tells the model to expect this string. */
+import { OLD_TOOL_RESULT_FOLDED_PLACEHOLDER as ELIDED_TOOL_RESULT } from './fold-notice'
 
 export class ToolResultTrimCompactor implements Compactor {
   readonly name = 'tool-result-trim'
