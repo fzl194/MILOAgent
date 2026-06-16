@@ -56,8 +56,9 @@ function SnapshotDetail({ snapshot }: { snapshot: RequestSnapshot }): React.Reac
         </div>
       )}
 
-      {/* Token dashboard */}
-      <TokenDashboard metrics={snapshot.metrics} config={snapshot.config} />
+      {/* Token dashboard — P2 context-org: also receives the post-call usage
+          patch (cachedTokens etc.) when the chat-store has joined it back. */}
+      <TokenDashboard metrics={snapshot.metrics} config={snapshot.config} usagePatch={snapshot.usagePatch} />
 
       {/* Compaction decisions */}
       <CompactionDecisionList decisions={snapshot.decisions} />

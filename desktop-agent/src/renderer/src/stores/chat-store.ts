@@ -18,6 +18,7 @@ import { useStatsStore } from './stats-store'
 import { useProjectStore, loadProjectClaudeMd } from './project-store'
 import { usePermissionStore } from './permission-store'
 import { useConfigStore } from './config-store'
+import { useMonitorStore } from './monitor-store'
 import { ALL_TOOLS } from '../agent-core/tools/definitions'
 import { buildToolRegistry } from '../agent-core/tools/harness'
 import { getEffectiveConfig, type EffectiveConfig } from '../lib/effective-config'
@@ -506,6 +507,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
               cachedTokens: usage.cachedTokens,
               usageSource,
               modelConfigId: modelConfig.id
+            })
+
+            // P2 context-org: record the post-call usage patch so the snapshot
+            // captured at onRequestReady (which can't carry cachedTokens — the
+            // API hadn't responded yet) gets joined with the real usage when
+            // the user selects this callId in the monitor panel.
+            useMonitorStore.getState().recordUsagePatch(d.callId, {
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              totalTokens: usage.totalTokens,
+              cachedTokens: usage.cachedTokens,
+              usageSource
             })
 
             // Mirror assistant messages (tagged with modelConfigId + reasoning snapshot)

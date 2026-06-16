@@ -41,6 +41,12 @@ interface MonitorState {
   selectedCallId: string | null
   /** The full snapshot for the selected callId (live: from liveEvents; replay: from disk). */
   selectedSnapshot: RequestSnapshot | null
+  /** P2 context-org: post-call usage patches keyed by callId. The chat-store
+   *  `done` handler calls `recordUsagePatch(callId, usage)` once the API
+   *  returns. The live snapshot is then `selectedSnapshot + usagePatches[callId]`
+   *  (joined on select) so the dashboard can show `cachedTokens` etc. Replay
+   *  mode has no live usage — patches stay empty. */
+  usagePatches: Record<string, RequestSnapshot['usagePatch']>
   subscriptionState: SubscriptionState
   lastError: string | null
 
@@ -51,11 +57,21 @@ interface MonitorState {
   enterReplayMode: (projectId: string, sessionId: string) => Promise<void>
   selectCall: (projectId: string, callId: string) => Promise<void>
   clearSelection: () => void
+  /** P2 context-org: record a post-call usage patch. The store keeps the most
+   *  recent one per callId; subsequent patches overwrite (idempotent on the
+   *  same call). If the patched callId is currently selected, `selectedSnapshot`
+   *  is re-joined reactively. */
+  recordUsagePatch: (callId: string, patch: RequestSnapshot['usagePatch']) => void
 }
 
 /** Module-scope: the live bus subscriptions live outside the store so re-renders
  *  don't tear them down. Cleared by exitLiveMode. */
 let liveUnsubs: Array<() => void> = []
+
+/** Monotonic request id for `enterReplayMode` async loads. A stale load
+ *  (e.g. user picks A then quickly B before A's snapshotList resolves) is
+ *  dropped on return so it can't overwrite the fresh session's data. */
+let replayReqSeq = 0
 
 function pushCapped(events: LiveMonitorEvent[], next: LiveMonitorEvent): LiveMonitorEvent[] {
   const combined = [...events, next]
@@ -73,6 +89,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   replaySessionId: null,
   selectedCallId: null,
   selectedSnapshot: null,
+  usagePatches: {},
   subscriptionState: 'idle',
   lastError: null,
 
@@ -112,11 +129,20 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     // Stop the live stream while replaying (avoid mixing live + replay rows).
     for (const unsub of liveUnsubs) unsub()
     liveUnsubs = []
-    set({ mode: 'replay', subscriptionState: 'replay-loading', replaySessionId: sessionId, selectedCallId: null, selectedSnapshot: null, lastError: null })
+    // Claim a request token. Any in-flight `enterReplayMode` call that returns
+    // AFTER this one will see its token is stale and bail out — prevents the
+    // classic "A→B race: A's slow IPC overwrites B's fresh state" bug.
+    const reqId = ++replayReqSeq
+    set({ mode: 'replay', subscriptionState: 'replay-loading', replaySessionId: sessionId, selectedCallId: null, selectedSnapshot: null, usagePatches: {}, lastError: null })
     try {
       const res = await window.electronAPI.snapshotList(projectId, sessionId)
+      // Bail if a newer enterReplayMode has been issued (or the store was
+      // remounted via exitLiveMode which doesn't reset seq, so re-entering
+      // replay also gets a fresh token).
+      if (reqId !== replayReqSeq) return
       set({ snapshotIndex: (res.data as SnapshotMeta[]) || [], subscriptionState: 'idle' })
     } catch (err: any) {
+      if (reqId !== replayReqSeq) return
       set({ snapshotIndex: [], subscriptionState: 'error', lastError: err?.message ?? String(err) })
     }
   },
@@ -128,7 +154,11 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       // Find the most recent request_view event for this callId in the live buffer.
       const evt = [...get().liveEvents].reverse().find((e) => e.dimension === 'request_view' && e.envelope.callId === callId)
       if (evt) {
-        set({ selectedSnapshot: evt.payload as RequestSnapshot })
+        // Join the post-call usage patch (cachedTokens etc.) if we've already
+        // received the `done` event for this callId. The patch is a separate
+        // field on the snapshot — it never mutates the pre-call record.
+        const patch = get().usagePatches[callId]
+        set({ selectedSnapshot: patch ? { ...(evt.payload as RequestSnapshot), usagePatch: patch } : (evt.payload as RequestSnapshot) })
       } else {
         set({ selectedSnapshot: null })
       }
@@ -156,5 +186,25 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     }
   },
 
-  clearSelection: () => set({ selectedCallId: null, selectedSnapshot: null })
+  clearSelection: () => set({ selectedCallId: null, selectedSnapshot: null }),
+
+  // P2 context-org: chat-store's `done` handler calls this once the API
+  // returns the usage chunk. We keep the patch under callId so a later
+  // `selectCall(callId)` can re-join it. If the call is CURRENTLY selected
+  // (user clicked the row before the response landed), we re-join the patch
+  // onto `selectedSnapshot` so the dashboard reflects the new data without
+  // the user having to click again.
+  recordUsagePatch: (callId, patch) => {
+    if (!callId || !patch) return
+    set((s) => {
+      const nextPatches = { ...s.usagePatches, [callId]: patch }
+      // If this call is the one currently shown, re-join the patch onto the
+      // selected snapshot. (Re-join = new object, so subscribers re-render.)
+      let nextSelected = s.selectedSnapshot
+      if (s.selectedSnapshot && s.selectedSnapshot.callId === callId) {
+        nextSelected = { ...s.selectedSnapshot, usagePatch: patch }
+      }
+      return { usagePatches: nextPatches, selectedSnapshot: nextSelected }
+    })
+  }
 }))

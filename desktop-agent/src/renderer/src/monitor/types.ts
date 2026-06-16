@@ -106,6 +106,20 @@ export interface RequestSnapshot {
     temperature?: number
     maxTokens?: number
   }
+  /** P2 context-org: post-call usage patch. Captured at `onRequestReady` the
+   *  snapshot cannot carry the API-returned `cached_tokens` (the API hasn't
+   *  responded yet); the chat-store's `done` handler records the actual usage
+   *  via `monitorStore.recordUsagePatch(callId, usage)`, and the monitor
+   *  store joins it back onto the matching snapshot by callId. Absent in
+   *  replay mode (no live usage to patch). */
+  usagePatch?: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens?: number
+    cachedTokens?: number
+    /** Mirrors `TokenUsageEvent.usageSource` — honest, never silently upgraded. */
+    usageSource: 'api' | 'partial' | 'estimated'
+  }
 }
 
 /**
