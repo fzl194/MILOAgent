@@ -52,7 +52,7 @@ export function enforceWorkspacePath(
   if (!isInsideWorkspacePath(root, resolved)) {
     return {
       allowed: false,
-      reason: `拒绝写入工作区之外的文件:${resolved}(工作区根 ${root})`
+      reason: `工作区之外的文件:${resolved}(工作区根 ${root})`
     }
   }
   return { allowed: true }

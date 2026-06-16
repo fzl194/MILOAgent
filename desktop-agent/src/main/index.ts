@@ -270,7 +270,7 @@ ipcMain.handle('fs:readFile', async (_, p: string, cwd?: string) => {
     const { sandbox, root } = await getSandboxAndRoot()
     const rootCanon = await canonicalize(root)
     const check = enforceWorkspacePath(canon, sandbox, rootCanon)
-    if (!check.allowed) return { success: false, error: check.reason ?? '拒绝读取工作区之外的文件' }
+    if (!check.allowed) return { success: false, error: `拒绝读取工作区之外的文件:${canon}(工作区根 ${rootCanon})` }
     const st = await stat(canon)
     // Refuse oversized files without reading them (avoids loading 100s of MB
     // into memory). truncated/bytes let the renderer steer the model to a
@@ -296,7 +296,7 @@ ipcMain.handle('fs:writeFile', async (_, p: string, content: string, cwd?: strin
     const { sandbox, root } = await getSandboxAndRoot()
     const rootCanon = await canonicalize(root)
     const check = enforceWorkspacePath(canon, sandbox, rootCanon)
-    if (!check.allowed) return { success: false, error: check.reason ?? '拒绝写入工作区之外的文件' }
+    if (!check.allowed) return { success: false, error: `拒绝写入工作区之外的文件:${canon}(工作区根 ${rootCanon})` }
     // mkdir parent (recursive) then write — atomic enough for a personal
     // desktop agent. canon for a non-existent file falls back to the raw
     // resolved path (canonicalize returns input on ENOENT), so `..` is still
