@@ -34,7 +34,10 @@ export function TraceTimeline({ projectId, sessionId }: { projectId: string; ses
     return () => {
       cancelled = true
     }
-  }, [sessionId])
+    // projectId + sessionId are BOTH part of the trace identity — traces are
+    // bucketed by project, so changing only projectId with a stable sessionId
+    // must re-fetch (and the in-flight read is cancelled via the cleanup above).
+  }, [projectId, sessionId])
 
   if (!sessionId) {
     return <div className="py-4 text-center text-xs text-faint">选择一个会话查看时间线</div>

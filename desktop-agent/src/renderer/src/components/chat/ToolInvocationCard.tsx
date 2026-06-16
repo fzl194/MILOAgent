@@ -1,11 +1,15 @@
 import { useState } from 'react'
 import type { Message, RiskLevel } from '../../agent-core/types'
+import { RISK_TONE } from '../../agent-core/risk-tone'
 
-const RISK_TONE: Record<RiskLevel, { label: string; color: string }> = {
-  safe: { label: 'SAFE', color: 'var(--color-ok)' },
-  write: { label: 'WRITE', color: 'var(--color-accent)' },
-  network: { label: 'NET', color: 'var(--color-warn)' },
-  dangerous: { label: 'DANGER', color: 'var(--color-danger)' }
+/** Surface-specific labels for `RiskLevel`. Kept here (not in `risk-tone.ts`)
+ *  because the chat card uses English short codes while other surfaces may
+ *  prefer local-language text. Color token still comes from the shared module. */
+const RISK_LABEL: Record<RiskLevel, string> = {
+  safe: 'SAFE',
+  write: 'WRITE',
+  network: 'NET',
+  dangerous: 'DANGER'
 }
 
 // Tool-call lifecycle label/tone, shown as a badge while running or on failure.
@@ -68,7 +72,9 @@ function CopyButton({ text }: { text: string }): React.ReactElement {
 export function ToolInvocationCard({ message }: { message: Message }): React.ReactElement {
   const name = message.toolName
   const args = message.toolArgs ?? {}
-  const risk = message.riskLevel ? RISK_TONE[message.riskLevel] : null
+  const risk = message.riskLevel
+    ? { color: RISK_TONE[message.riskLevel].color, label: RISK_LABEL[message.riskLevel] }
+    : null
   const ms = message.durationMs
   // Default collapsed — multiple tools must not flood the conversation.
   const [open, setOpen] = useState(false)

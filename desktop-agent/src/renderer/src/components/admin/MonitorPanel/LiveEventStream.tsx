@@ -4,6 +4,39 @@ import { useProjectStore } from '../../../stores/project-store'
 import { DIMENSIONS } from '../../../monitor/dimensions'
 import type { DimKey, MonitorEnvelope, SnapshotMeta } from '../../../monitor/types'
 import type { TokenUsageEvent, TurnLifecycleEvent } from '../../../monitor/types'
+import type { ApprovalSource, RiskLevel } from '../../../agent-core/types'
+import { APPROVAL_TONE, RISK_TONE, badgeStyle, type ToneMeta } from '../../../agent-core/risk-tone'
+
+/** Surface-specific labels for monitor event-stream badges. The shared
+ *  `risk-tone.ts` module provides color tokens only; labels live with each
+ *  consumer so different surfaces can diverge (e.g. chat card may use
+ *  localized text later) without re-coordinating. */
+const RISK_LABEL: Record<RiskLevel, string> = {
+  safe: 'SAFE',
+  write: 'WRITE',
+  network: 'NET',
+  dangerous: 'DANGER'
+}
+
+const APPROVAL_LABEL: Record<ApprovalSource, string> = {
+  user: 'USER',
+  auto: 'AUTO',
+  allowlist: 'LIST',
+  denied: 'DENIED'
+}
+
+/** A row's textual summary is paired with a small set of inline-styled badges.
+ *  Style is injected via `style` (not Tailwind classes) so it picks up the
+ *  active light/dark theme and matches the chat `ToolInvocationCard` colors. */
+interface RowSummary {
+  primary: string
+  badges: Array<{ label: string; tone: ToneMeta; title?: string }>
+}
+
+/** Keyed by `${callId}-${dimension}` — same value the row uses as React key.
+ *  Re-keying (e.g. session switch, dimension toggle hiding a row) drops the
+ *  cached entry naturally; nothing leaks across events. */
+type SummaryMap = ReadonlyMap<string, RowSummary>
 
 /** Left pane: live event stream (live mode) or snapshot list (replay mode).
  *  Auto-scrolls to the newest row in live mode. */
@@ -36,6 +69,20 @@ export function LiveEventStream(): React.ReactElement {
     [liveEvents, dimensionEnabled]
   )
 
+  // Pre-compute every row's summary once per `visible` change. This is the
+  // fix for HIGH H2: without it, `EventRow` (memo'd) would see a fresh
+  // RowSummary reference on every render of the parent and re-render all rows
+  // — the whole point of memo was to avoid that.
+  const summaries = useMemo<SummaryMap>(() => {
+    const m = new Map<string, RowSummary>()
+    for (let i = 0; i < visible.length; i++) {
+      const e = visible[i]
+      const k = `${e.envelope.callId}-${e.dimension}-${i}`
+      m.set(k, summarize(e.dimension, e.payload))
+    }
+    return m
+  }, [visible])
+
   const isError = mode === 'replay' && subscriptionState === 'error'
 
   return (
@@ -50,18 +97,21 @@ export function LiveEventStream(): React.ReactElement {
           visible.length === 0 ? (
             <EmptyHint text="等待事件… 发一条消息触发 agent" />
           ) : (
-            visible.map((e, i) => (
-              <EventRow
-                key={`${e.envelope.callId}-${e.dimension}-${i}`}
-                dimension={e.dimension}
-                envelope={e.envelope}
-                summary={summarize(e.dimension, e.payload)}
-                selected={selectedCallId === e.envelope.callId}
-                onClick={() => {
-                  if (pid) void selectCall(pid, e.envelope.callId)
-                }}
-              />
-            ))
+            visible.map((e, i) => {
+              const k = `${e.envelope.callId}-${e.dimension}-${i}`
+              return (
+                <EventRow
+                  key={k}
+                  dimension={e.dimension}
+                  envelope={e.envelope}
+                  summary={summaries.get(k)!}
+                  selected={selectedCallId === e.envelope.callId}
+                  onClick={() => {
+                    if (pid) void selectCall(pid, e.envelope.callId)
+                  }}
+                />
+              )
+            })
           )
         ) : snapshotIndex.length === 0 ? (
           <EmptyHint text="该会话没有请求快照" />
@@ -90,12 +140,12 @@ function EmptyHint({ text }: { text: string }): React.ReactElement {
 }
 
 /** Memoized so a row only re-renders when ITS props change — a new event landing
- *  in the stream won't re-render every prior row. summary is precomputed in the
- *  parent so the memo comparison is on stable primitives. */
+ *  in the stream won't re-render every prior row. The parent's `summaries`
+ *  Map is stable per `visible`, so the `summary` prop reference is stable too. */
 const EventRow = memo(function EventRow(props: {
   dimension: DimKey
   envelope: MonitorEnvelope
-  summary: string
+  summary: RowSummary
   selected: boolean
   onClick: () => void
 }): React.ReactElement {
@@ -113,7 +163,19 @@ const EventRow = memo(function EventRow(props: {
         <span className="font-mono text-[10px] text-faint">r{envelope.round}</span>
         <span className="ml-auto font-mono text-[9px] text-faint">{fmtTime(envelope.ts)}</span>
       </div>
-      <span className="truncate text-[11px] text-muted">{summary}</span>
+      <div className="flex items-center gap-1.5">
+        {summary.badges.map((b, i) => (
+          <span
+            key={i}
+            title={b.title}
+            className="shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] tracking-wider"
+            style={badgeStyle(b.tone)}
+          >
+            {b.label}
+          </span>
+        ))}
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted">{summary.primary}</span>
+      </div>
     </button>
   )
 })
@@ -139,33 +201,53 @@ const SnapshotRow = memo(function SnapshotRow(props: {
   )
 })
 
-function summarize(dimension: DimKey, payload: unknown): string {
-  if (!payload) return '—'
+function summarize(dimension: DimKey, payload: unknown): RowSummary {
+  if (!payload) return { primary: '—', badges: [] }
   switch (dimension) {
     case 'request_view': {
       const p = payload as { view?: unknown[]; metrics?: { tokenEstimate?: number; fillRatio?: number } }
       const msgs = p.view?.length ?? 0
       const tok = p.metrics?.tokenEstimate ?? 0
       const fill = p.metrics?.fillRatio ? `${Math.round(p.metrics.fillRatio * 100)}%` : '?'
-      return `${msgs} 条消息 · ~${tok} tok · 填充 ${fill}`
+      return { primary: `${msgs} 条消息 · ~${tok} tok · 填充 ${fill}`, badges: [] }
     }
     case 'context_metrics': {
       const p = payload as { metrics?: { fillRatio?: number }; decisions?: unknown[] }
       const fill = p.metrics?.fillRatio ? `${Math.round(p.metrics.fillRatio * 100)}%` : '?'
       const decs = p.decisions?.length ?? 0
-      return `填充 ${fill} · ${decs} 个裁剪决策`
+      return { primary: `填充 ${fill} · ${decs} 个裁剪决策`, badges: [] }
     }
     case 'tool_call': {
-      const p = payload as { name?: string; isError?: boolean; durationMs?: number }
-      return `${p.name ?? '?'}${p.isError ? ' · 失败' : ''}${p.durationMs != null ? ` · ${p.durationMs}ms` : ''}`
+      const p = payload as {
+        name?: string
+        isError?: boolean
+        durationMs?: number
+        riskLevel?: RiskLevel
+        approvedBy?: ApprovalSource
+      }
+      const badges: RowSummary['badges'] = []
+      if (p.riskLevel) {
+        badges.push({ label: RISK_LABEL[p.riskLevel], tone: RISK_TONE[p.riskLevel], title: `风险:${p.riskLevel}` })
+      }
+      if (p.approvedBy) {
+        badges.push({ label: APPROVAL_LABEL[p.approvedBy], tone: APPROVAL_TONE[p.approvedBy], title: `审批:${p.approvedBy}` })
+      }
+      const parts: string[] = []
+      parts.push(p.name ?? '?')
+      if (p.isError) parts.push('失败')
+      if (p.durationMs != null) parts.push(`${p.durationMs}ms`)
+      return { primary: parts.join(' · '), badges }
     }
     case 'token_usage': {
       const p = payload as TokenUsageEvent
-      return `↑${p.inputTokens} ↓${p.outputTokens}${p.cachedTokens ? ` · cache ${p.cachedTokens}` : ''} · ${p.usageSource}`
+      return {
+        primary: `↑${p.inputTokens} ↓${p.outputTokens}${p.cachedTokens ? ` · cache ${p.cachedTokens}` : ''} · ${p.usageSource}`,
+        badges: []
+      }
     }
     case 'turn_lifecycle': {
       const p = payload as TurnLifecycleEvent
-      return `${p.stage}${p.reason ? ` · ${p.reason}` : ''}`
+      return { primary: `${p.stage}${p.reason ? ` · ${p.reason}` : ''}`, badges: [] }
     }
   }
 }

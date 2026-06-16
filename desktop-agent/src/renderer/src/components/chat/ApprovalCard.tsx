@@ -1,11 +1,16 @@
 import { useChatStore } from '../../stores/chat-store'
 import type { ApprovalRequest, RiskLevel } from '../../agent-core/types'
+import { RISK_TONE } from '../../agent-core/risk-tone'
 
-const LEVEL_META: Record<RiskLevel, { label: string; tone: string; icon: string }> = {
-  safe: { label: '安全', tone: 'var(--color-ok)', icon: '✓' },
-  write: { label: '写入', tone: 'var(--color-accent)', icon: '✎' },
-  network: { label: '网络', tone: 'var(--color-warn)', icon: '⇅' },
-  dangerous: { label: '危险', tone: 'var(--color-danger)', icon: '⚠' }
+/** Surface-specific label + icon for the approval card. Color comes from
+ *  the shared `RISK_TONE` token so all three risk-bearing surfaces
+ *  (ApprovalCard / ToolInvocationCard / LiveEventStream) stay in sync
+ *  with the active theme. */
+const LEVEL_META: Record<RiskLevel, { label: string; icon: string }> = {
+  safe: { label: '安全', icon: '✓' },
+  write: { label: '写入', icon: '✎' },
+  network: { label: '网络', icon: '⇅' },
+  dangerous: { label: '危险', icon: '⚠' }
 }
 
 function preview(req: ApprovalRequest): string {
@@ -24,16 +29,17 @@ export function ApprovalCard(): React.ReactElement | null {
     <div className="space-y-2.5">
       {pending.map((req) => {
         const meta = LEVEL_META[req.level]
+        const tone = RISK_TONE[req.level].color
         const canRemember = req.patterns.length > 0 // dangerous calls have no patterns
         return (
           <div key={req.reqId} className="mx-auto max-w-3xl rise">
             <div
               className="rounded-xl border bg-card/70 p-3.5 shadow-lg backdrop-blur-sm"
-              style={{ borderColor: `color-mix(in srgb, ${meta.tone} 45%, transparent)` }}
+              style={{ borderColor: `color-mix(in srgb, ${tone} 45%, transparent)` }}
             >
               <div className="mb-2 flex items-center gap-2">
-                <span className="text-sm" style={{ color: meta.tone }}>{meta.icon}</span>
-                <span className="font-mono text-[11px] tracking-wider" style={{ color: meta.tone }}>
+                <span className="text-sm" style={{ color: tone }}>{meta.icon}</span>
+                <span className="font-mono text-[11px] tracking-wider" style={{ color: tone }}>
                   APPROVAL · {meta.label}
                 </span>
                 <span className="font-mono text-[11px] text-fg">· {req.name}</span>

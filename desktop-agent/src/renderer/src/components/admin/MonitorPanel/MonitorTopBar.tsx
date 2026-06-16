@@ -20,6 +20,15 @@ export function MonitorTopBar(): React.ReactElement {
   const sessions = useSessionStore((s) => s.sessions)
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
 
+  // Replay-scope is project-scoped: traces/snapshots are bucketed by project
+  // (see docs/0615 持久化). Offering sessions from OTHER projects in this
+  // selector would let the user pick a session whose trace lives in a
+  // different bucket than `activeProjectId` reads from — resulting in an
+  // empty/mismatched replay. Restrict the list to the current project.
+  const projectSessions = activeProjectId
+    ? sessions.filter((s) => s.projectId === activeProjectId)
+    : []
+
   // Group dimensions for the toggle row.
   const groups: Array<{ label: string; dims: DimKey[] }> = [
     { label: '上下文', dims: ALL_DIMENSIONS.filter((d) => DIMENSIONS[d].group === 'context') },
@@ -49,7 +58,7 @@ export function MonitorTopBar(): React.ReactElement {
         </button>
       </div>
 
-      {/* Replay session selector */}
+      {/* Replay session selector — only sessions in the current project. */}
       {mode === 'replay' && (
         <select
           value={replaySessionId ?? ''}
@@ -58,8 +67,8 @@ export function MonitorTopBar(): React.ReactElement {
           }}
           className="max-w-[220px] truncate rounded-lg border border-line/50 bg-bg/40 px-2 py-1 text-xs text-fg"
         >
-          {sessions.length === 0 && <option value="">(无会话)</option>}
-          {sessions.map((s) => (
+          {projectSessions.length === 0 && <option value="">(无会话)</option>}
+          {projectSessions.map((s) => (
             <option key={s.id} value={s.id}>
               {s.title || s.id.slice(0, 8)}
             </option>
