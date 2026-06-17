@@ -193,4 +193,35 @@ npm run test:watch   # 监听模式
 
 ---
 
+## 12. 多 Agent 并行协作(架构师 / 开发 / 测试)
+
+当多个 Agent 窗口并行开发时,**按角色 + 文件归属分工**,不靠 worktree 隔离。**协议权威见 `collab/README.md`,看板总览见 `collab/PROJECT.md`**。
+
+**三角色 + 写权限边界**:
+
+| 角色 | 职责 | 写权限 |
+|---|---|---|
+| **架构师 architect** | 定方向 + 设计契约 + 文件归属 + 验收标准 | 仅 `collab/` 文档 |
+| **开发 dev** | 按 design 归属表实现 | **仅归属表里分给他的文件** + `log.md` |
+| **测试 test** | typecheck/test + 按验收标准验证 | `**/*.test.ts` + `log.md` |
+
+**协作根目录 `collab/`**(仓库根,与 `docs/` 同级):`README.md`(协议)/ `PROJECT.md`(看板,先读)/ `backlog/`(需求池)/ `specs/<id>/`(工作项 = 看板卡,含 `STATUS.md` 状态锁 + `design.md` 契约 + `log.md` 交接日志)。
+
+**状态机**(`STATUS.md` 的 `status` 字段 = 分布式锁):
+```
+DRAFT → READY → DEV → DEV_DONE → TESTING → DONE      (任一阶段可 → BLOCKED)
+```
+**领取 = 乐观锁**:翻 `status` + 写 `owner` + 从 design 抄 `files`,然后立即 `commit`;被别人先 commit 则 `git pull` 重读后退避。一个工作项同一阶段只有一个 owner。
+
+**三条铁纪律**:
+1. 开发**只动 `STATUS.md` 里 `files:` 列表的文件**;越界先找架构师改 design,**绝不擅自改别人的文件**(这是根治"file overlap commit"的核心——归属在设计时已定)。
+2. 阶段交接**必写 `log.md` 一段**(做了啥/注意啥/疑问),让下一棒无需问人(跨会话记忆)。
+3. 翻状态后**立即原子提交**(§5),别把多个工作项的改动堆一起。
+
+**并行两层**:多工作项并行(架构师按文件归属拆,文件不重叠 = 真并行)+ 流水线并行(不同工作项处于不同阶段,各角色都忙)。**worktree 在此模型下可选**,归属已隔离、共用主仓库即可,仅高风险工作项才单独开。
+
+**启动第一动作**:每个 Agent 窗口进来先 `读 collab/PROJECT.md`,确认角色 + 看哪些工作项"可领"。照着 `collab/specs/_EXAMPLE/` 抄创建真实工作项。
+
+---
+
 *本文件随项目演进迭代;有新的稳定约定就更新它(走 §5 git 流程)。*
